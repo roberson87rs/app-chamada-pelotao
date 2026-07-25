@@ -1,10 +1,15 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+import time
 import psycopg2
 import hashlib
 import os
+import warnings
 import streamlit.components.v1 as components
+
+# Ignorar avisos desnecessários do pandas no terminal
+warnings.filterwarnings('ignore', category=UserWarning)
 
 # Configuração da página
 st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", layout="wide", initial_sidebar_state="expanded")
@@ -24,29 +29,27 @@ def init_db():
     cursor = conn.cursor()
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pelotoes (id SERIAL PRIMARY KEY, nome_pelotao TEXT UNIQUE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS fracoes (id SERIAL PRIMARY KEY, nome_fracao TEXT UNIQUE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios (id SERIAL PRIMARY KEY, usuario TEXT UNIQUE, identidade TEXT UNIQUE, senha TEXT, pg TEXT, nome TEXT, fracao TEXT, perfil TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS militares (id SERIAL PRIMARY KEY, identidade TEXT UNIQUE, pg TEXT, nome TEXT, fracao TEXT, celular TEXT DEFAULT '', whatsapp TEXT DEFAULT '', telefone TEXT DEFAULT '', email TEXT DEFAULT '', endereco TEXT DEFAULT '', presenca INTEGER DEFAULT 0, falta INTEGER DEFAULT 0, justificativa TEXT DEFAULT '')''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS fracoes (id SERIAL PRIMARY KEY, nome_fracao TEXT UNIQUE, pelotao TEXT DEFAULT 'Geral', status TEXT DEFAULT 'APROVADA')''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios (id SERIAL PRIMARY KEY, usuario TEXT UNIQUE, identidade TEXT UNIQUE, senha TEXT, pg TEXT, nome TEXT, fracao TEXT, pelotao TEXT DEFAULT 'Geral', perfil TEXT, nome_completo TEXT DEFAULT '')''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS militares (id SERIAL PRIMARY KEY, identidade TEXT UNIQUE, pg TEXT, nome TEXT, nome_completo TEXT DEFAULT '', fracao TEXT, pelotao TEXT DEFAULT 'Geral', celular TEXT DEFAULT '', whatsapp TEXT DEFAULT '', telefone TEXT DEFAULT '', email TEXT DEFAULT '', endereco TEXT DEFAULT '', presenca INTEGER DEFAULT 0, falta INTEGER DEFAULT 0, justificativa TEXT DEFAULT '', ultimo_gerente TEXT DEFAULT '-', ultima_atualizacao TEXT DEFAULT '-')''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS ausencias_futuras (id SERIAL PRIMARY KEY, nome_militar TEXT, fracao TEXT, data_prevista TEXT, motivo TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS historico (id SERIAL PRIMARY KEY, data_hora TEXT, pg TEXT, nome TEXT, fracao TEXT, status TEXT, justificativa TEXT, gerente_responsavel TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS historico (id SERIAL PRIMARY KEY, data_hora TEXT, pg TEXT, nome TEXT, fracao TEXT, pelotao TEXT DEFAULT 'Geral', status TEXT, justificativa TEXT, gerente_responsavel TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS ferias (id SERIAL PRIMARY KEY, identidade TEXT, data_inicio DATE, data_fim DATE, bi TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS viagens (id SERIAL PRIMARY KEY, identidade TEXT, nome TEXT, fracao TEXT, data_ida DATE, data_volta DATE, cidade TEXT, pais TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS backup_deletados (id SERIAL PRIMARY KEY, identidade TEXT, pg TEXT, nome TEXT, fracao TEXT, celular TEXT, whatsapp TEXT, telefone TEXT, email TEXT, endereco TEXT, usuario TEXT, senha TEXT, perfil TEXT, data_exclusao TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS viagens (id SERIAL PRIMARY KEY, identidade TEXT, nome TEXT, fracao TEXT, pelotao TEXT DEFAULT 'Geral', data_ida DATE, data_volta DATE, cidade TEXT, pais TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS backup_deletados (id SERIAL PRIMARY KEY, identidade TEXT, pg TEXT, nome TEXT, fracao TEXT, pelotao TEXT DEFAULT 'Geral', celular TEXT, whatsapp TEXT, telefone TEXT, email TEXT, endereco TEXT, usuario TEXT, senha TEXT, perfil TEXT, data_exclusao TEXT, nome_completo TEXT DEFAULT '')''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS solicitacoes_dados (id SERIAL PRIMARY KEY, identidade TEXT, pg TEXT, nome TEXT, celular TEXT, whatsapp TEXT, telefone TEXT, email TEXT, endereco TEXT, status TEXT DEFAULT 'PENDENTE')''')
     
-    cursor.execute('''ALTER TABLE militares ADD COLUMN IF NOT EXISTS pelotao TEXT DEFAULT 'Geral' ''')
-    cursor.execute('''ALTER TABLE militares ADD COLUMN IF NOT EXISTS nome_completo TEXT DEFAULT '' ''')
-    cursor.execute('''ALTER TABLE militares ADD COLUMN IF NOT EXISTS ultimo_gerente TEXT DEFAULT '-' ''')
-    cursor.execute('''ALTER TABLE militares ADD COLUMN IF NOT EXISTS ultima_atualizacao TEXT DEFAULT '-' ''')
-    
-    cursor.execute('''ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS pelotao TEXT DEFAULT 'Geral' ''')
-    cursor.execute('''ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS nome_completo TEXT DEFAULT '' ''')
-    cursor.execute('''ALTER TABLE fracoes ADD COLUMN IF NOT EXISTS pelotao TEXT DEFAULT 'Geral' ''')
-    cursor.execute('''ALTER TABLE fracoes ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'APROVADA' ''')
-    cursor.execute('''ALTER TABLE backup_deletados ADD COLUMN IF NOT EXISTS pelotao TEXT DEFAULT 'Geral' ''')
-    cursor.execute('''ALTER TABLE backup_deletados ADD COLUMN IF NOT EXISTS nome_completo TEXT DEFAULT '' ''')
-    cursor.execute('''ALTER TABLE viagens ADD COLUMN IF NOT EXISTS pelotao TEXT DEFAULT 'Geral' ''')
-    cursor.execute('''ALTER TABLE historico ADD COLUMN IF NOT EXISTS pelotao TEXT DEFAULT 'Geral' ''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS solicitacoes_pessoal (
+                        id SERIAL PRIMARY KEY, 
+                        tipo TEXT, 
+                        identidade TEXT, 
+                        pg TEXT, 
+                        nome TEXT, 
+                        nome_completo TEXT, 
+                        pelotao_destino TEXT, 
+                        fracao_destino TEXT, 
+                        status TEXT DEFAULT 'PENDENTE'
+                    )''')
     
     conn.commit()
 
@@ -72,6 +75,22 @@ try:
 except Exception as e:
     st.error(f"Erro ao conectar ou atualizar o Supabase: {e}")
     st.stop()
+
+# --- GESTÃO DE SESSÃO E TEMPO DE INATIVIDADE (10 MINUTOS) ---
+if 'logado' not in st.session_state:
+    st.session_state.logado = False
+if 'ultima_atividade' not in st.session_state:
+    st.session_state.ultima_atividade = time.time()
+
+TEMPO_LIMITE_INATIVIDADE = 600
+if st.session_state.logado:
+    tempo_atual = time.time()
+    if (tempo_atual - st.session_state.ultima_atividade) > TEMPO_LIMITE_INATIVIDADE:
+        st.session_state.logado = False
+        st.warning("⚠️ Sessão expirada por inatividade (10 minutos). Por favor, faça login novamente.")
+        st.rerun()
+    else:
+        st.session_state.ultima_atividade = tempo_atual
 
 # --- FUNÇÃO DE LOGIN ---
 def login():
@@ -112,6 +131,7 @@ def login():
                 st.session_state.perfil_ativo = st.session_state.perfis_usuario[0]
                 st.session_state.pelotao = user[6] if len(user) > 6 else 'Geral'
                 st.session_state.nome_completo = user[7] if len(user) > 7 and user[7] else user[3]
+                st.session_state.ultima_atividade = time.time()
                 st.rerun()
             else:
                 st.error("Usuário/Identidade ou senha incorretos!")
@@ -303,7 +323,7 @@ def tela_administrador():
     fracoes_bd = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE status = 'APROVADA'", conn)['nome_fracao'].tolist()
     todas_fracoes_bd = pd.read_sql_query("SELECT nome_fracao FROM fracoes", conn)['nome_fracao'].tolist()
     
-    abas_nomes = ["🏢 Estrutura (Pel/Fração)", "👥 Gestão de Efetivo", "🔑 Acessos", "📨 Solicitações (Contatos)"]
+    abas_nomes = ["🏢 Estrutura (Pel/Fração)", "👥 Gestão de Efetivo", "🔑 Acessos", "📨 Solicitações (Pessoal e Contatos)"]
     if is_super_admin: abas_nomes.append("🦸‍♂️ Restauração (Lixeira)")
         
     abas = st.tabs(abas_nomes)
@@ -319,7 +339,9 @@ def tela_administrador():
                     conn.commit()
                     st.success("Pelotão criado!")
                     st.rerun()
-                except: st.error("Pelotão já existe.")
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Pelotão já existe ou erro: {e}")
         st.write("**Pelotões Ativos:**", pelotoes_bd)
         
         st.markdown("---")
@@ -351,7 +373,9 @@ def tela_administrador():
                     conn.commit()
                     st.success("Fração adicionada!")
                     st.rerun()
-                except: st.error("Fração já existe.")
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Fração já existe ou erro: {e}")
         st.write("**Frações Aprovadas:**", fracoes_bd)
         
         st.markdown("---")
@@ -373,43 +397,99 @@ def tela_administrador():
                 conn.commit()
                 st.success("Fração removida!")
                 st.rerun()
+
+        st.markdown("---")
+        st.subheader("🧹 Limpeza Geral de Dados (Marco Zero da OM)")
+        st.warning("⚠️ Atenção: Esta ação apaga TODOS os militares de teste, históricos, férias, viagens, solicitações, frações e pelotões existentes, mantendo apenas a sua conta de Administrador Geral (000000).")
+        if st.button("🗑️ Limpar Todos os Dados de Teste e Reiniciar OM", type="primary"):
+            cur = conn.cursor()
+            try:
+                cur.execute("DELETE FROM militares WHERE identidade != '000000'")
+                cur.execute("DELETE FROM usuarios WHERE identidade != '000000'")
+                cur.execute("DELETE FROM pelotoes")
+                cur.execute("DELETE FROM fracoes")
+                cur.execute("DELETE FROM ausencias_futuras")
+                cur.execute("DELETE FROM historico")
+                cur.execute("DELETE FROM ferias")
+                cur.execute("DELETE FROM viagens")
+                cur.execute("DELETE FROM backup_deletados")
+                cur.execute("DELETE FROM solicitacoes_dados")
+                cur.execute("DELETE FROM solicitacoes_pessoal")
+                conn.commit()
+                st.success("✅ Banco de dados limpo com sucesso! Pronto para o uso oficial.")
+                st.rerun()
+            except Exception as e:
+                conn.rollback()
+                st.error(f"Erro ao limpar dados: {e}")
         
     with abas[1]:
-        st.subheader("Adicionar Novo Militar")
+        st.subheader("Adicionar Novo Militar (Direto)")
+        
+        admin_pel_escolhido = st.selectbox("Pelotão", pelotoes_bd, key="admin_pel_cad_inst")
+        frac_filtradas_admin = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(admin_pel_escolhido,))['nome_fracao'].tolist()
+        
         with st.form("novo_militar"):
             c1, c2, c3 = st.columns([1,1,2])
             with c1: nova_identidade = st.text_input("Identidade")
             with c2: novo_pg = st.text_input("Posto/Graduação")
             with c3: novo_nome_guerra = st.text_input("Nome de Guerra (Ficará em Maiúsculo)").upper()
             
-            c4, c5, c6 = st.columns([2,1,1])
+            c4, c5 = st.columns([2,1])
             with c4: novo_nome_completo = st.text_input("Nome Completo")
-            with c5: novo_pel = st.selectbox("Pelotão", pelotoes_bd)
-            with c6: nova_fracao = st.selectbox("Fração", fracoes_bd) if fracoes_bd else st.text_input("Fração")
+            with c5: nova_fracao = st.selectbox("Fração", frac_filtradas_admin if frac_filtradas_admin else fracoes_bd, key="admin_frac_cad")
             
             if st.form_submit_button("Cadastrar Novo Militar"):
                 cur = conn.cursor()
                 try:
-                    cur.execute("""INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao) VALUES (%s, %s, %s, %s, %s, %s) 
-                                   ON CONFLICT (identidade) DO UPDATE SET pg=EXCLUDED.pg, nome=EXCLUDED.nome, nome_completo=EXCLUDED.nome_completo, fracao=EXCLUDED.fracao, pelotao=EXCLUDED.pelotao""", 
-                                (nova_identidade, novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, novo_pel))
-                    cur.execute("""INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) 
-                                   ON CONFLICT (identidade) DO NOTHING""",
-                                   (novo_nome_guerra.lower(), nova_identidade, hash_senha("1234"), novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, novo_pel, "Convencional"))
+                    cur.execute("SELECT COUNT(*) FROM militares WHERE identidade = %s", (nova_identidade,))
+                    existe_mil = cur.fetchone()[0] > 0
+                    
+                    if existe_mil:
+                        cur.execute("""UPDATE militares SET pg = %s, nome = %s, nome_completo = %s, fracao = %s, pelotao = %s WHERE identidade = %s""",
+                                    (novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido, nova_identidade))
+                    else:
+                        cur.execute("""INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao) VALUES (%s, %s, %s, %s, %s, %s)""", 
+                                    (nova_identidade, novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido))
+                    
+                    cur.execute("SELECT COUNT(*) FROM usuarios WHERE identidade = %s", (nova_identidade,))
+                    existe_usr = cur.fetchone()[0] > 0
+                    
+                    if not existe_usr:
+                        cur.execute("""INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                    (novo_nome_guerra.lower(), nova_identidade, hash_senha("1234"), novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido, "Convencional"))
+                    else:
+                        cur.execute("""UPDATE usuarios SET pg = %s, nome = %s, nome_completo = %s, fracao = %s, pelotao = %s WHERE identidade = %s""",
+                                    (novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido, nova_identidade))
+                        
                     conn.commit()
-                    st.success("Militar cadastrado (Senha padrão: 1234)!")
-                except Exception as e: st.error(f"Erro ao cadastrar: {e}")
+                    st.success("Militar cadastrado com sucesso! (Senha padrão: 1234)")
+                except Exception as e: 
+                    conn.rollback()
+                    st.error(f"Erro ao cadastrar: {e}")
                 
         st.markdown("---")
         st.subheader("⚠️ Gerenciar Efetivo Existente")
         
-        query_uniao = """
-            SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares
-            UNION
-            SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios
-        """
-        df_all = pd.read_sql_query(query_uniao, conn)
-        df_all = df_all[df_all['identidade'] != '000000'].drop_duplicates(subset=['identidade'])
+        if 'admin_gestao_pel' not in st.session_state:
+            st.session_state.admin_gestao_pel = pelotoes_bd[0] if pelotoes_bd else "Geral"
+
+        def atualizar_gestao_pel():
+            st.session_state.admin_gestao_pel = st.session_state.sb_gestao_pel
+
+        filtro_gestao_pel = st.selectbox("1. Filtrar por Pelotão para Gerenciamento", pelotoes_bd, key="sb_gestao_pel", on_change=atualizar_gestao_pel)
+        
+        try:
+            query_uniao = """
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares WHERE pelotao = %s
+                UNION
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios WHERE pelotao = %s
+            """
+            df_all = pd.read_sql_query(query_uniao, conn, params=(st.session_state.admin_gestao_pel, st.session_state.admin_gestao_pel))
+            df_all = df_all[df_all['identidade'] != '000000'].drop_duplicates(subset=['identidade'])
+        except Exception as e:
+            conn.rollback()
+            df_all = pd.DataFrame()
+            st.error(f"Erro ao carregar efetivo: {e}")
         
         ordem_hierarquica = ["Gen Ex", "Gen Div", "Gen Bda", "Cel", "Ten Cel", "Maj", "Cap", "1º Ten", "2º Ten", "Asp Of", "S Ten", "1º Sgt", "2º Sgt", "3º Sgt", "Cb", "Sd EP", "Sd EV"]
         
@@ -420,7 +500,7 @@ def tela_administrador():
             df_all = df_all.sort_values(['pg_cat', 'nome'])
             df_exibicao = df_all.drop(columns=['pg_cat', 'pg_norm'])
             
-            militar_selecionado = st.selectbox("Selecione um militar", df_exibicao['identidade'] + " - " + df_exibicao['pg'] + " " + df_exibicao['nome'])
+            militar_selecionado = st.selectbox("2. Selecione um militar do pelotão", df_exibicao['identidade'] + " - " + df_exibicao['pg'] + " " + df_exibicao['nome'])
             
             col_ex, col_senha, col_edit = st.columns(3)
             
@@ -429,30 +509,38 @@ def tela_administrador():
                     idt_del = militar_selecionado.split(" - ")[0]
                     agora_del = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                     cur = conn.cursor()
-                    cur.execute("SELECT pg, nome, fracao, celular, whatsapp, telefone, email, endereco, pelotao, nome_completo FROM militares WHERE identidade = %s", (idt_del,))
-                    mil_data = cur.fetchone() or ("", "", "", "", "", "", "", "", "Geral", "")
-                    cur.execute("SELECT usuario, senha, perfil FROM usuarios WHERE identidade = %s", (idt_del,))
-                    usr_data = cur.fetchone() or ("", "", "")
-                    
-                    cur.execute("""INSERT INTO backup_deletados (identidade, pg, nome, fracao, pelotao, celular, whatsapp, telefone, email, endereco, usuario, senha, perfil, data_exclusao, nome_completo)
-                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                (idt_del, mil_data[0], mil_data[1], mil_data[2], mil_data[8], mil_data[3], mil_data[4], mil_data[5], mil_data[6], mil_data[7], usr_data[0], usr_data[1], usr_data[2], agora_del, mil_data[9]))
-                    
-                    cur.execute("DELETE FROM militares WHERE identidade = %s", (idt_del,))
-                    cur.execute("DELETE FROM usuarios WHERE identidade = %s", (idt_del,))
-                    conn.commit()
-                    st.success(f"Militar excluído e enviado para a lixeira.")
-                    st.rerun()
+                    try:
+                        cur.execute("SELECT pg, nome, fracao, celular, whatsapp, telefone, email, endereco, pelotao, nome_completo FROM militares WHERE identidade = %s", (idt_del,))
+                        mil_data = cur.fetchone() or ("", "", "", "", "", "", "", "", "Geral", "")
+                        cur.execute("SELECT usuario, senha, perfil FROM usuarios WHERE identidade = %s", (idt_del,))
+                        usr_data = cur.fetchone() or ("", "", "")
+                        
+                        cur.execute("""INSERT INTO backup_deletados (identidade, pg, nome, fracao, pelotao, celular, whatsapp, telefone, email, endereco, usuario, senha, perfil, data_exclusao, nome_completo)
+                                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                    (idt_del, mil_data[0], mil_data[1], mil_data[2], mil_data[8], mil_data[3], mil_data[4], mil_data[5], mil_data[6], mil_data[7], usr_data[0], usr_data[1], usr_data[2], agora_del, mil_data[9]))
+                        
+                        cur.execute("DELETE FROM militares WHERE identidade = %s", (idt_del,))
+                        cur.execute("DELETE FROM usuarios WHERE identidade = %s", (idt_del,))
+                        conn.commit()
+                        st.success(f"Militar excluído e enviado para a lixeira.")
+                        st.rerun()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Erro ao excluir: {e}")
                     
             if col_senha.button("🔑 Resetar Senha (1234)"):
                 if militar_selecionado:
                     idt_res = militar_selecionado.split(" - ")[0]
                     cur = conn.cursor()
-                    cur.execute("UPDATE usuarios SET senha = %s WHERE identidade = %s", (hash_senha("1234"), idt_res))
-                    conn.commit()
-                    st.success(f"Senha redefinida!")
+                    try:
+                        cur.execute("UPDATE usuarios SET senha = %s WHERE identidade = %s", (hash_senha("1234"), idt_res))
+                        conn.commit()
+                        st.success(f"Senha redefinida!")
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Erro ao resetar: {e}")
 
-            with st.expander("✏️ Editar Dados do Militar Selecionado (Corrige Nomes e Fração)"):
+            with st.expander("✏️ Editar Dados do Militar Selecionado (Pelotão, Fração e Nomes)"):
                 if militar_selecionado:
                     idt_edit = militar_selecionado.split(" - ")[0]
                     dados_edit = df_all[df_all['identidade'] == idt_edit].iloc[0]
@@ -461,27 +549,48 @@ def tela_administrador():
                         e_pg = st.text_input("PG", value=dados_edit['pg'])
                         e_guerra = st.text_input("Nome de Guerra", value=dados_edit['nome']).upper()
                         e_completo = st.text_input("Nome Completo", value=dados_edit['nome_completo'])
-                        e_fracao = st.selectbox("Fração", fracoes_bd, index=fracoes_bd.index(dados_edit['fracao']) if dados_edit['fracao'] in fracoes_bd else 0)
+                        
+                        e_pelotao = st.selectbox("Pelotão", pelotoes_bd, index=pelotoes_bd.index(dados_edit['pelotao']) if dados_edit['pelotao'] in pelotoes_bd else 0)
+                        frac_filtradas_edicao = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(e_pelotao,))['nome_fracao'].tolist()
+                        
+                        e_fracao = st.selectbox("Fração", frac_filtradas_edicao if frac_filtradas_edicao else fracoes_bd, index=(frac_filtradas_edicao.index(dados_edit['fracao']) if frac_filtradas_edicao and dados_edit['fracao'] in frac_filtradas_edicao else 0))
                         
                         if st.form_submit_button("Salvar Edição"):
                             cur = conn.cursor()
-                            cur.execute("UPDATE militares SET pg=%s, nome=%s, nome_completo=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo, e_fracao, idt_edit))
-                            cur.execute("UPDATE usuarios SET pg=%s, nome=%s, nome_completo=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo, e_fracao, idt_edit))
-                            conn.commit()
-                            st.success("Dados alterados com sucesso!")
-                            st.rerun()
+                            try:
+                                cur.execute("UPDATE militares SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo, e_pelotao, e_fracao, idt_edit))
+                                cur.execute("UPDATE usuarios SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo, e_pelotao, e_fracao, idt_edit))
+                                conn.commit()
+                                st.success("Dados alterados com sucesso!")
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Erro ao editar: {e}")
 
             st.markdown("---")
-            st.subheader("📋 Relação do Efetivo")
+            st.subheader("📋 Relação do Efetivo do Pelotão Selecionado")
             st.dataframe(df_exibicao, hide_index=True, use_container_width=True)
+        else:
+            st.info("Nenhum militar cadastrado neste pelotão.")
             
     with abas[2]:
         st.subheader("Atribuir e Gerenciar Perfis de Acesso")
-        if not df_all.empty:
-            militar_selecionado_tab5 = st.selectbox("Selecione o Militar para Gerenciar Acessos:", df_exibicao['identidade'] + " - " + df_exibicao['pg'] + " " + df_exibicao['nome'])
+        try:
+            query_uniao_acesso = """
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares
+                UNION
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios
+            """
+            df_all_acc = pd.read_sql_query(query_uniao_acesso, conn)
+            df_all_acc = df_all_acc[df_all_acc['identidade'] != '000000'].drop_duplicates(subset=['identidade'])
+        except:
+            df_all_acc = pd.DataFrame()
+
+        if not df_all_acc.empty:
+            militar_selecionado_tab5 = st.selectbox("Selecione o Militar para Gerenciar Acessos:", df_all_acc['identidade'] + " - " + df_all_acc['pg'] + " " + df_all_acc['nome'], key="sel_acesso")
             if militar_selecionado_tab5:
                 idt_selecionada = militar_selecionado_tab5.split(" - ")[0]
-                dados_mil = df_all[df_all['identidade'] == idt_selecionada].iloc[0]
+                dados_mil = df_all_acc[df_all_acc['identidade'] == idt_selecionada].iloc[0]
                 df_user = pd.read_sql_query("SELECT usuario, perfil FROM usuarios WHERE identidade = %s", conn, params=(idt_selecionada,))
                 
                 usuario_atual = ""
@@ -503,23 +612,91 @@ def tela_administrador():
                     if st.form_submit_button("Salvar Configurações de Acesso"):
                         perfis_str = ",".join(u_perfis)
                         cur = conn.cursor()
-                        cur.execute("INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (identidade) DO UPDATE SET pg=EXCLUDED.pg, nome=EXCLUDED.nome, fracao=EXCLUDED.fracao, pelotao=EXCLUDED.pelotao", (idt_selecionada, dados_mil['pg'], dados_mil['nome'], dados_mil['nome_completo'], dados_mil['fracao'], dados_mil['pelotao']))
-                        if not df_user.empty:
-                            cur.execute("UPDATE usuarios SET usuario = %s, perfil = %s, pg = %s, nome = %s, nome_completo = %s, fracao = %s, pelotao = %s WHERE identidade = %s", 
-                                        (u_usuario.lower(), perfis_str, dados_mil['pg'], dados_mil['nome'], dados_mil['nome_completo'], dados_mil['fracao'], dados_mil['pelotao'], idt_selecionada))
-                        else:
-                            cur.execute("INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                                        (u_usuario.lower(), idt_selecionada, hash_senha("1234"), dados_mil['pg'], dados_mil['nome'], dados_mil['nome_completo'], dados_mil['fracao'], dados_mil['pelotao'], perfis_str))
-                        conn.commit()
-                        st.success("✅ Acessos atualizados!")
+                        try:
+                            cur.execute("SELECT COUNT(*) FROM militares WHERE identidade = %s", (idt_selecionada,))
+                            if cur.fetchone()[0] == 0:
+                                cur.execute("INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao) VALUES (%s, %s, %s, %s, %s, %s)", 
+                                            (idt_selecionada, dados_mil['pg'], dados_mil['nome'], dados_mil['nome_completo'], dados_mil['fracao'], dados_mil['pelotao']))
+                            else:
+                                cur.execute("UPDATE militares SET pg = %s, nome = %s, fracao = %s, pelotao = %s WHERE identidade = %s", 
+                                            (dados_mil['pg'], dados_mil['nome'], dados_mil['fracao'], dados_mil['pelotao'], idt_selecionada))
+                            
+                            if not df_user.empty:
+                                cur.execute("UPDATE usuarios SET usuario = %s, perfil = %s, pg = %s, nome = %s, nome_completo = %s, fracao = %s, pelotao = %s WHERE identidade = %s", 
+                                            (u_usuario.lower(), perfis_str, dados_mil['pg'], dados_mil['nome'], dados_mil['nome_completo'], dados_mil['fracao'], dados_mil['pelotao'], idt_selecionada))
+                            else:
+                                cur.execute("INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                                            (u_usuario.lower(), idt_selecionada, hash_senha("1234"), dados_mil['pg'], dados_mil['nome'], dados_mil['nome_completo'], dados_mil['fracao'], dados_mil['pelotao'], perfis_str))
+                            conn.commit()
+                            st.success("✅ Acessos atualizados!")
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Erro ao salvar acesso: {e}")
 
     with abas[3]:
-        st.subheader("📨 Solicitações de Atualização (Plano de Chamada)")
+        st.subheader("📨 Solicitações (Pessoal, Gerências e Contatos)")
+        
+        st.markdown("#### 👥 Solicitações de Movimentação, Inclusão e Gerentes")
+        df_req_pessoal = pd.read_sql_query("SELECT id, tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino FROM solicitacoes_pessoal WHERE status = 'PENDENTE'", conn)
+        
+        if not df_req_pessoal.empty:
+            for idx, row in df_req_pessoal.iterrows():
+                with st.expander(f"📌 [{row['tipo']}] {row['pg']} {row['nome']} ➔ Destino/Fração: {row['pelotao_destino']} / {row['fracao_destino']}"):
+                    st.write(f"**Identidade:** {row['identidade']} | **Nome Completo:** {row['nome_completo']}")
+                    c_acc_p, c_rej_p = st.columns(2)
+                    
+                    if c_acc_p.button("✔️ Autorizar Solicitação", key=f"acc_p_{row['id']}"):
+                        cur = conn.cursor()
+                        try:
+                            if row['tipo'] == 'TRANSFERENCIA':
+                                cur.execute("UPDATE militares SET pelotao = %s, fracao = %s WHERE identidade = %s", (row['pelotao_destino'], row['fracao_destino'], row['identidade']))
+                                cur.execute("UPDATE usuarios SET pelotao = %s, fracao = %s WHERE identidade = %s", (row['pelotao_destino'], row['fracao_destino'], row['identidade']))
+                            elif row['tipo'] == 'INCLUSAO':
+                                cur.execute("SELECT COUNT(*) FROM militares WHERE identidade = %s", (row['identidade'],))
+                                if cur.fetchone()[0] == 0:
+                                    cur.execute("INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao) VALUES (%s, %s, %s, %s, %s, %s)",
+                                                (row['identidade'], row['pg'], row['nome'], row['nome_completo'], row['fracao_destino'], row['pelotao_destino']))
+                                else:
+                                    cur.execute("UPDATE militares SET pelotao = %s, fracao = %s, pg = %s, nome = %s, nome_completo = %s WHERE identidade = %s",
+                                                (row['pelotao_destino'], row['fracao_destino'], row['pg'], row['nome'], row['nome_completo'], row['identidade']))
+                                
+                                cur.execute("SELECT COUNT(*) FROM usuarios WHERE identidade = %s", (row['identidade'],))
+                                if cur.fetchone()[0] == 0:
+                                    cur.execute("INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                                                (row['nome'].lower(), row['identidade'], hash_senha("1234"), row['pg'], row['nome'], row['nome_completo'], row['fracao_destino'], row['pelotao_destino'], "Convencional"))
+                            elif row['tipo'] == 'GERENTE':
+                                cur.execute("SELECT perfil FROM usuarios WHERE identidade = %s", (row['identidade'],))
+                                u_res = cur.fetchone()
+                                perfis_atuais = [p.strip() for p in u_res[0].split(',')] if u_res and u_res[0] else ["Convencional"]
+                                if "Gerente" not in perfis_atuais: perfis_atuais.append("Gerente")
+                                novo_perfil_str = ",".join(perfis_atuais)
+                                
+                                cur.execute("UPDATE usuarios SET perfil = %s, fracao = %s, pelotao = %s WHERE identidade = %s", (novo_perfil_str, row['fracao_destino'], row['pelotao_destino'], row['identidade']))
+                                cur.execute("UPDATE militares SET fracao = %s, pelotao = %s WHERE identidade = %s", (row['fracao_destino'], row['pelotao_destino'], row['identidade']))
+                            
+                            cur.execute("UPDATE solicitacoes_pessoal SET status = 'APROVADA' WHERE id = %s", (row['id'],))
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Erro ao aprovar solicitação: {e}")
+                        
+                    if c_rej_p.button("❌ Rejeitar", key=f"rej_p_{row['id']}"):
+                        cur = conn.cursor()
+                        cur.execute("UPDATE solicitacoes_pessoal SET status = 'REJEITADA' WHERE id = %s", (row['id'],))
+                        conn.commit()
+                        st.rerun()
+        else:
+            st.info("Nenhuma solicitação de pessoal pendente.")
+
+        st.markdown("---")
+        
+        st.markdown("#### 📞 Solicitações de Atualização de Contatos")
         df_req = pd.read_sql_query("SELECT id, pg, nome, celular, whatsapp, telefone, email, endereco FROM solicitacoes_dados WHERE status = 'PENDENTE'", conn)
         
         if not df_req.empty:
             for idx, row in df_req.iterrows():
-                with st.expander(f"📌 Solicitação de: {row['pg']} {row['nome']}"):
+                with st.expander(f"📌 Contato de: {row['pg']} {row['nome']}"):
                     st.write(f"**Celular:** {row['celular']} | **WhatsApp:** {row['whatsapp']} | **Fixo:** {row['telefone']}")
                     st.write(f"**E-mail:** {row['email']}")
                     st.write(f"**Endereço:** {row['endereco']}")
@@ -527,11 +704,15 @@ def tela_administrador():
                     c_acc, c_rej = st.columns(2)
                     if c_acc.button("✔️ Aprovar e Atualizar Banco", key=f"acc_{row['id']}"):
                         cur = conn.cursor()
-                        cur.execute("UPDATE militares SET celular=%s, whatsapp=%s, telefone=%s, email=%s, endereco=%s WHERE pg=%s AND nome=%s",
-                                    (row['celular'], row['whatsapp'], row['telefone'], row['email'], row['endereco'], row['pg'], row['nome']))
-                        cur.execute("UPDATE solicitacoes_dados SET status = 'APROVADA' WHERE id = %s", (row['id'],))
-                        conn.commit()
-                        st.rerun()
+                        try:
+                            cur.execute("UPDATE militares SET celular=%s, whatsapp=%s, telefone=%s, email=%s, endereco=%s WHERE pg=%s AND nome=%s",
+                                        (row['celular'], row['whatsapp'], row['telefone'], row['email'], row['endereco'], row['pg'], row['nome']))
+                            cur.execute("UPDATE solicitacoes_dados SET status = 'APROVADA' WHERE id = %s", (row['id'],))
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Erro ao atualizar contato: {e}")
                         
                     if c_rej.button("❌ Rejeitar", key=f"rej_req_{row['id']}"):
                         cur = conn.cursor()
@@ -551,20 +732,30 @@ def tela_administrador():
                 if st.button("♻️ Resgatar Registro"):
                     id_bkp = id_resgatar.split(" - ")[0]
                     cur = conn.cursor()
-                    cur.execute("SELECT identidade, pg, nome, fracao, celular, whatsapp, telefone, email, endereco, usuario, senha, perfil, pelotao, nome_completo FROM backup_deletados WHERE id = %s", (id_bkp,))
-                    bkp = cur.fetchone()
-                    if bkp:
-                        cur.execute("""INSERT INTO militares (identidade, pg, nome, fracao, celular, whatsapp, telefone, email, endereco, pelotao, nome_completo)
-                                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (identidade) DO NOTHING""",
-                                    (bkp[0], bkp[1], bkp[2], bkp[3], bkp[4], bkp[5], bkp[6], bkp[7], bkp[8], bkp[12], bkp[13]))
-                        if bkp[9]:
-                            cur.execute("""INSERT INTO usuarios (usuario, identidade, senha, pg, nome, fracao, perfil, pelotao, nome_completo)
-                                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (identidade) DO NOTHING""",
-                                        (bkp[9], bkp[0], bkp[10], bkp[1], bkp[2], bkp[3], bkp[11], bkp[12], bkp[13]))
-                        cur.execute("DELETE FROM backup_deletados WHERE id = %s", (id_bkp,))
-                        conn.commit()
-                        st.success("✅ Registro resgatado!")
-                        st.rerun()
+                    try:
+                        cur.execute("SELECT identidade, pg, nome, fracao, celular, whatsapp, telefone, email, endereco, usuario, senha, perfil, pelotao, nome_completo FROM backup_deletados WHERE id = %s", (id_bkp,))
+                        bkp = cur.fetchone()
+                        if bkp:
+                            cur.execute("SELECT COUNT(*) FROM militares WHERE identidade = %s", (bkp[0],))
+                            if cur.fetchone()[0] == 0:
+                                cur.execute("""INSERT INTO militares (identidade, pg, nome, fracao, celular, whatsapp, telefone, email, endereco, pelotao, nome_completo)
+                                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                            (bkp[0], bkp[1], bkp[2], bkp[3], bkp[4], bkp[5], bkp[6], bkp[7], bkp[8], bkp[12], bkp[13]))
+                            
+                            if bkp[9]:
+                                cur.execute("SELECT COUNT(*) FROM usuarios WHERE identidade = %s", (bkp[0],))
+                                if cur.fetchone()[0] == 0:
+                                    cur.execute("""INSERT INTO usuarios (usuario, identidade, senha, pg, nome, fracao, perfil, pelotao, nome_completo)
+                                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                                (bkp[9], bkp[0], bkp[10], bkp[1], bkp[2], bkp[3], bkp[11], bkp[12], bkp[13]))
+                                    
+                            cur.execute("DELETE FROM backup_deletados WHERE id = %s", (id_bkp,))
+                            conn.commit()
+                            st.success("✅ Registro resgatado!")
+                            st.rerun()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Erro ao resgatar: {e}")
 
     conn.close()
 
@@ -596,13 +787,15 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
     pg_upper_map = {rank.upper(): rank for rank in ordem_hierarquica}
             
     abas_nomes = ["🗺️ MAPA", "✈️ Livro de Viagens", "📋 Plano de Chamada"]
-    if is_cmt_om: abas_nomes.append("📚 Histórico de Faltas")
-    else: abas_nomes.append("🏢 Gestão do Pelotão")
+    if is_cmt_om: 
+        abas_nomes.extend(["📚 Histórico de Faltas", "🛡️ Estrutura de Segurança (Cargos)"])
+    else: 
+        abas_nomes.extend(["🏢 Gestão do Pelotão", "👥 Gestão de Efetivo"])
         
     abas = st.tabs(abas_nomes)
     
     with abas[0]: # MAPA
-        st.subheader("Mapa Geral do Efetivo em Tempo Real")
+        st.subheader(f"Mapa Geral - {filtro_pelotao if filtro_pelotao else 'OM'}")
         df_mapa = df_militares.copy()
         
         df_mapa['pg_norm'] = df_mapa['pg'].str.upper().map(pg_upper_map).fillna(df_mapa['pg'])
@@ -619,29 +812,30 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         c3.metric("Faltas / Férias", len(df_mapa[df_mapa['STATUS'] == 'FALTOU']))
         c4.metric("Pendentes", len(df_mapa[df_mapa['STATUS'] == 'PENDENTE']))
         
-        # Botão de Consolidação para Cmt Pelotão (Com limpeza automática dos dados manuais)
         if not is_cmt_om:
             st.markdown("---")
             if st.button("✔️ Finalizar e Consolidar Chamada do Pelotão", type="primary"):
                 agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                 cmt_nome = f"Cmt Pel - {st.session_state.pg} {st.session_state.nome_guerra}"
                 cur = conn.cursor()
-                for idx, row in df_mapa.iterrows():
-                    # 1. Salva no Histórico Oficial
-                    cur.execute("INSERT INTO historico (data_hora, pg, nome, fracao, pelotao, status, justificativa, gerente_responsavel) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                                (agora, row['pg'], row['nome_guerra'], row['fracao'], row['pelotao'], row['STATUS'], row['justificativa'], cmt_nome))
-                
-                # 2. Reseta a tiragem de faltas manuais do pelotão para branco (presenca=0, falta=0, justificativa=''), preservando quem está de férias
-                ids_ferias = list(ferias_ativas.keys())
-                if ids_ferias:
-                    format_strings = ','.join(['%s'] * len(ids_ferias))
-                    cur.execute(f"UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s AND identidade NOT IN ({format_strings})", tuple([filtro_pelotao] + ids_ferias))
-                else:
-                    cur.execute("UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s", (filtro_pelotao,))
-                
-                conn.commit()
-                st.success("✅ Chamada do pelotão consolidada com sucesso, enviada para o Histórico da OM e os campos manuais foram limpos para o próximo dia!")
-                st.rerun()
+                try:
+                    for idx, row in df_mapa.iterrows():
+                        cur.execute("INSERT INTO historico (data_hora, pg, nome, fracao, pelotao, status, justificativa, gerente_responsavel) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                                    (agora, row['pg'], row['nome_guerra'], row['fracao'], row['pelotao'], row['STATUS'], row['justificativa'], cmt_nome))
+                    
+                    ids_ferias = list(ferias_ativas.keys())
+                    if ids_ferias:
+                        format_strings = ','.join(['%s'] * len(ids_ferias))
+                        cur.execute(f"UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s AND identidade NOT IN ({format_strings})", tuple([filtro_pelotao] + ids_ferias))
+                    else:
+                        cur.execute("UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s", (filtro_pelotao,))
+                    
+                    conn.commit()
+                    st.success("✅ Chamada do pelotão consolidada com sucesso, enviada para o Histórico da OM e os campos manuais foram limpos!")
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Erro ao consolidar chamada: {e}")
 
     with abas[1]: # VIAGENS
         st.subheader("Registros do Livro de Viagens")
@@ -676,8 +870,8 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         
         st.dataframe(df_plano, hide_index=True, use_container_width=True)
         
-    with abas[3]: 
-        if is_cmt_om: # HISTÓRICO OM (Com correção do visual da impressão PDF limpa)
+    if is_cmt_om:
+        with abas[3]: # HISTÓRICO OM
             st.subheader("Histórico de Faltas Consolidado")
             st.write("Filtre o histórico por data para visualização e impressão.")
             data_filtro = st.date_input("Selecione a Data")
@@ -688,7 +882,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             if not df_hist.empty:
                 st.dataframe(df_hist, hide_index=True, use_container_width=True)
                 
-                # HTML otimizado com fundo branco e texto escuro para legibilidade perfeita na impressão PDF
                 html_tabela = df_hist.to_html(index=False)
                 html_completo = f"""
                 <html><head>
@@ -710,7 +903,24 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                 components.html(html_completo, height=500, scrolling=True)
             else:
                 st.info(f"Nenhuma chamada foi consolidada no banco de dados no dia {data_str}.")
-        else: # GESTÃO CMT PEL
+
+        with abas[4]: # ESTRUTURA DE SEGURANÇA (CARGOS CHAVE) PARA CMT OM
+            st.subheader("🛡️ Estrutura de Segurança e Gestão (Cargos Chave da OM)")
+            st.write("Lista oficial de todos os militares que possuem funções e perfis administrativos ou gerenciais no sistema.")
+            
+            df_seguranca = pd.read_sql_query("""
+                SELECT pg, nome as nome_guerra, nome_completo, pelotao, fracao, perfil, usuario 
+                FROM usuarios 
+                WHERE perfil IS NOT NULL AND perfil != '' AND perfil != 'Convencional'
+                ORDER BY pelotao, nome
+            """, conn)
+            
+            if not df_seguranca.empty:
+                st.dataframe(df_seguranca, hide_index=True, use_container_width=True)
+            else:
+                st.info("Nenhum perfil especial atribuído além do padrão convencional no momento.")
+    else:
+        with abas[3]: # GESTÃO FRAÇÃO E GERENTES
             st.subheader(f"Gestão de Frações - {filtro_pelotao}")
             with st.form("solicitar_fracao"):
                 nova_f = st.text_input("Solicitar Criação de Nova Fração para o seu Pelotão")
@@ -720,8 +930,102 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                         cur.execute("INSERT INTO fracoes (nome_fracao, pelotao, status) VALUES (%s, %s, 'PENDENTE')", (nova_f.strip(), filtro_pelotao))
                         conn.commit()
                         st.success("✅ Solicitação enviada! O Administrador precisa autorizar.")
-                    except:
-                        st.error("Esta fração já existe ou já foi solicitada.")
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Erro ao solicitar fração: {e}")
+            
+            st.markdown("---")
+            st.subheader("👔 Indicar Gerente para Fração")
+            fracoes_pelotao_ativo = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(filtro_pelotao,))['nome_fracao'].tolist()
+            militares_pelotao_ativo = pd.read_sql_query("SELECT identidade, pg, nome FROM militares WHERE pelotao = %s", conn, params=(filtro_pelotao,))
+            
+            if fracoes_pelotao_ativo and not militares_pelotao_ativo.empty:
+                with st.form("form_indicar_gerente"):
+                    sel_frac_gerente = st.selectbox("Selecione a Fração", fracoes_pelotao_ativo)
+                    mil_opcoes = militares_pelotao_ativo['identidade'] + " - " + militares_pelotao_ativo['pg'] + " " + militares_pelotao_ativo['nome']
+                    sel_mil_gerente = st.selectbox("Selecione o Militar para ser Gerente", mil_opcoes)
+                    
+                    if st.form_submit_button("Solicitar Atribuição de Gerente"):
+                        idt_g = sel_mil_gerente.split(" - ")[0]
+                        m_row = militares_pelotao_ativo[militares_pelotao_ativo['identidade'] == idt_g].iloc[0]
+                        cur = conn.cursor()
+                        try:
+                            cur.execute("""INSERT INTO solicitacoes_pessoal (tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino, status)
+                                           VALUES ('GERENTE', %s, %s, %s, %s, %s, %s, 'PENDENTE')""",
+                                        (m_row['identidade'], m_row['pg'], m_row['nome'], m_row['nome'], filtro_pelotao, sel_frac_gerente))
+                            conn.commit()
+                            st.success("✅ Solicitação de indicação de gerente enviada ao Administrador!")
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Erro ao solicitar gerente: {e}")
+            else:
+                st.info("Cadastre frações e militares no seu pelotão para indicar gerentes.")
+                        
+        with abas[4]: # GESTÃO DE EFETIVO
+            st.subheader("👥 Gestão e Movimentação de Efetivo")
+            
+            pelotoes_cadastrados = pd.read_sql_query("SELECT nome_pelotao FROM pelotoes", conn)['nome_pelotao'].tolist()
+            fracoes_pelotao_destino = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(filtro_pelotao,))['nome_fracao'].tolist()
+            
+            st.markdown("#### 🔄 Solicitar Transferência de Militar para o seu Pelotão")
+            
+            if 'pel_origem_selecionado' not in st.session_state:
+                st.session_state.pel_origem_selecionado = pelotoes_cadastrados[0] if pelotoes_cadastrados else "Geral"
+
+            def atualizar_pel_origem():
+                st.session_state.pel_origem_selecionado = st.session_state.sb_pel_origem
+
+            filtro_pel_origem = st.selectbox("Filtrar por Pelotão de Origem", pelotoes_cadastrados, key="sb_pel_origem", on_change=atualizar_pel_origem)
+            
+            fracoes_origem_lista = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(st.session_state.pel_origem_selecionado,))['nome_fracao'].tolist()
+            filtro_frac_origem = st.selectbox("Filtrar por Fração de Origem", fracoes_origem_lista if fracoes_origem_lista else ["Geral"])
+            
+            df_mil_origem = pd.read_sql_query("SELECT identidade, pg, nome, nome_completo, pelotao FROM militares WHERE pelotao = %s AND fracao = %s", conn, params=(st.session_state.pel_origem_selecionado, filtro_frac_origem))
+            
+            if not df_mil_origem.empty:
+                militar_escolhido = st.selectbox("Selecione o Militar", df_mil_origem['identidade'] + " - " + df_mil_origem['pg'] + " " + df_mil_origem['nome'])
+                fracao_destino_transf = st.selectbox("Selecione a Fração de Destino no seu Pelotão", fracoes_pelotao_destino if fracoes_pelotao_destino else ["Geral"])
+                
+                if st.button("Enviar Solicitação de Transferência"):
+                    idt_t = militar_escolhido.split(" - ")[0]
+                    mil_row = df_mil_origem[df_mil_origem['identidade'] == idt_t].iloc[0]
+                    cur = conn.cursor()
+                    try:
+                        cur.execute("""INSERT INTO solicitacoes_pessoal (tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino, status)
+                                       VALUES ('TRANSFERENCIA', %s, %s, %s, %s, %s, %s, 'PENDENTE')""",
+                                    (mil_row['identidade'], mil_row['pg'], mil_row['nome'], mil_row['nome_completo'], filtro_pelotao, fracao_destino_transf))
+                        conn.commit()
+                        st.success("✅ Solicitação de transferência enviada ao Administrador!")
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Erro ao solicitar transferência: {e}")
+            else:
+                st.info("Nenhum militar encontrado nesta fração.")
+                
+            st.markdown("---")
+            
+            st.markdown("#### ➕ Solicitar Inclusão de Novo Militar")
+            with st.form("form_incluir_militar_pel"):
+                i_idt = st.text_input("Nº de Identidade")
+                i_pg = st.text_input("Posto / Graduação")
+                i_guerra = st.text_input("Nome de Guerra (Maiúsculo)").upper()
+                i_completo = st.text_input("Nome Completo")
+                i_fracao = st.selectbox("Fração de Destino no seu Pelotão", fracoes_pelotao_destino if fracoes_pelotao_destino else ["Geral"])
+                
+                if st.form_submit_button("Solicitar Inclusão ao Administrador"):
+                    if i_idt and i_pg and i_guerra:
+                        cur = conn.cursor()
+                        try:
+                            cur.execute("""INSERT INTO solicitacoes_pessoal (tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino, status)
+                                           VALUES ('INCLUSAO', %s, %s, %s, %s, %s, %s, 'PENDENTE')""",
+                                        (i_idt, i_pg, i_guerra, i_completo, filtro_pelotao, i_fracao))
+                            conn.commit()
+                            st.success("✅ Solicitação de inclusão enviada ao Administrador!")
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Erro ao solicitar inclusão: {e}")
+                    else:
+                        st.error("Preencha todos os campos obrigatórios.")
             
     conn.close()
 
@@ -731,10 +1035,7 @@ def tela_comandante_pelotao():
 def tela_comandante_om():
     tela_comandante_generica("🛡️ Painel do Comandante de OM", is_cmt_om=True)
 
-# --- FLUXO PRINCIPAL ---
-if 'logado' not in st.session_state:
-    st.session_state.logado = False
-
+# --- FLUXO PRINCIPAL DE EXIBIÇÃO ---
 if not st.session_state.logado:
     login()
 else:
