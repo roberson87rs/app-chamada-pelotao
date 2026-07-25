@@ -8,9 +8,8 @@ import os
 # Configuração da página
 st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CONEXÃO COM O SUPABASE (POSTGRESQL) ---
-# Cole aqui embaixo o seu link completo do Supabase substituindo [YOUR-PASSWORD] pela sua senha real
-SUPABASE_URL = "postgresql://postgres:1723Rsh32335770@db.jgzhlalaczpmecwqpofg.supabase.co:5432/postgres"
+# --- CONEXÃO COM O SUPABASE (POOLER) ---
+SUPABASE_URL = "postgresql://postgres.jgzhlalaczpmecwqpofg:1723Rsh32335770@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
 
 def get_connection():
     return psycopg2.connect(SUPABASE_URL)
