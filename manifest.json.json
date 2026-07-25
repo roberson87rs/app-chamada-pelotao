@@ -1,0 +1,20 @@
+{
+  "name": "Controle de Efetivo",
+  "short_name": "Efetivo",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e1117",
+  "theme_color": "#0e1117",
+  "icons": [
+    {
+      "src": "/app/static/brasao.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/app/static/brasao.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
