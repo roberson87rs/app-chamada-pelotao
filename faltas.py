@@ -7,12 +7,74 @@ import hashlib
 import os
 import warnings
 import streamlit.components.v1 as components
+import base64
 
 # Ignorar avisos desnecessários do pandas no terminal
 warnings.filterwarnings('ignore', category=UserWarning)
 
 # Configuração da página
 st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
+
+def injetar_pwa_personalizado():
+    if os.path.exists("brasao.png"):
+        with open("brasao.png", "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        
+        b64_img = f"data:image/png;base64,{encoded_string}"
+        
+        js_code = f"""
+        <script>
+            // Forçar o ícone do iPhone (Apple Touch Icon)
+            let appleIcon = document.querySelector('link[rel="apple-touch-icon"]');
+            if (!appleIcon) {{
+                appleIcon = document.createElement('link');
+                appleIcon.rel = 'apple-touch-icon';
+                document.head.appendChild(appleIcon);
+            }}
+            appleIcon.href = "{b64_img}";
+
+            // Substituir o favicon padrão do navegador
+            let icon = document.querySelector('link[rel="icon"]');
+            if(icon) icon.href = "{b64_img}";
+
+            // Criar um "manifest.json" falso com os seus dados e injetar na página (Foco no Android/Chrome/Edge)
+            const manifest = {{
+                "name": "Sistema de Faltas",
+                "short_name": "Faltas OM",
+                "start_url": window.location.href,
+                "display": "standalone",
+                "background_color": "#0e1117",
+                "theme_color": "#0e1117",
+                "icons": [{{
+                    "src": "{b64_img}",
+                    "sizes": "192x192",
+                    "type": "image/png"
+                }},
+                {{
+                    "src": "{b64_img}",
+                    "sizes": "512x512",
+                    "type": "image/png"
+                }}]
+            }};
+            
+            const manifestBlob = new Blob([JSON.stringify(manifest)], {{type: 'application/json'}});
+            const manifestUrl = URL.createObjectURL(manifestBlob);
+            
+            let manifestLink = document.querySelector('link[rel="manifest"]');
+            if (manifestLink) {{
+                manifestLink.href = manifestUrl;
+            }} else {{
+                manifestLink = document.createElement('link');
+                manifestLink.rel = 'manifest';
+                document.head.appendChild(manifestLink);
+            }}
+            manifestLink.href = manifestUrl;
+        </script>
+        """
+        components.html(js_code, height=0, width=0)
+
+# Ativar o PWA personalizado
+injetar_pwa_personalizado()
 
 # --- CONEXÃO COM O SUPABASE (POOLER) ---
 SUPABASE_URL = "postgresql://postgres.jgzhlalaczpmecwqpofg:1723Rsh32335770@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
