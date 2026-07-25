@@ -15,66 +15,71 @@ warnings.filterwarnings('ignore', category=UserWarning)
 # Configuração da página
 st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
 
-def injetar_pwa_personalizado():
+def forcar_nome_e_icone_pwa():
     if os.path.exists("brasao.png"):
         with open("brasao.png", "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
         
         b64_img = f"data:image/png;base64,{encoded_string}"
         
-        js_code = f"""
+        js_pwa = f"""
         <script>
-            // Forçar o ícone do iPhone (Apple Touch Icon)
-            let appleIcon = document.querySelector('link[rel="apple-touch-icon"]');
-            if (!appleIcon) {{
-                appleIcon = document.createElement('link');
-                appleIcon.rel = 'apple-touch-icon';
-                document.head.appendChild(appleIcon);
-            }}
+            const doc = window.parent.document;
+
+            // 1. Alterar o título da aba do navegador para "Efetivo OM"
+            doc.title = "Efetivo OM";
+
+            // 2. Forçar o ícone (Favicon)
+            let linkIcon = doc.querySelector('link[rel="icon"]') || doc.createElement('link');
+            linkIcon.type = 'image/png';
+            linkIcon.rel = 'icon';
+            linkIcon.href = "{b64_img}";
+            doc.getElementsByTagName('head')[0].appendChild(linkIcon);
+
+            // 3. Forçar o ícone da Apple (iOS)
+            let appleIcon = doc.querySelector('link[rel="apple-touch-icon"]') || doc.createElement('link');
+            appleIcon.rel = 'apple-touch-icon';
             appleIcon.href = "{b64_img}";
+            doc.getElementsByTagName('head')[0].appendChild(appleIcon);
 
-            // Substituir o favicon padrão do navegador
-            let icon = document.querySelector('link[rel="icon"]');
-            if(icon) icon.href = "{b64_img}";
-
-            // Criar um "manifest.json" falso com os seus dados e injetar na página (Foco no Android/Chrome/Edge)
-            const manifest = {{
-                "name": "Sistema de Faltas",
-                "short_name": "Faltas OM",
-                "start_url": window.location.href,
+            // 4. Criar e injetar um Web App Manifest personalizado com o nome "Efetivo OM"
+            const customManifest = {{
+                "name": "Efetivo OM",
+                "short_name": "Efetivo OM",
+                "start_url": window.parent.location.href,
                 "display": "standalone",
                 "background_color": "#0e1117",
                 "theme_color": "#0e1117",
-                "icons": [{{
-                    "src": "{b64_img}",
-                    "sizes": "192x192",
-                    "type": "image/png"
-                }},
-                {{
-                    "src": "{b64_img}",
-                    "sizes": "512x512",
-                    "type": "image/png"
-                }}]
+                "icons": [
+                    {{
+                        "src": "{b64_img}",
+                        "sizes": "192x192",
+                        "type": "image/png"
+                    }},
+                    {{
+                        "src": "{b64_img}",
+                        "sizes": "512x512",
+                        "type": "image/png"
+                    }}
+                ]
             }};
-            
-            const manifestBlob = new Blob([JSON.stringify(manifest)], {{type: 'application/json'}});
-            const manifestUrl = URL.createObjectURL(manifestBlob);
-            
-            let manifestLink = document.querySelector('link[rel="manifest"]');
-            if (manifestLink) {{
-                manifestLink.href = manifestUrl;
-            }} else {{
-                manifestLink = document.createElement('link');
-                manifestLink.rel = 'manifest';
-                document.head.appendChild(manifestLink);
+
+            const stringBlob = new Blob([JSON.stringify(customManifest)], {{ type: 'application/json' }});
+            const manifestUrl = URL.createObjectURL(stringBlob);
+
+            let manifestTag = doc.querySelector('link[rel="manifest"]');
+            if (!manifestTag) {{
+                manifestTag = doc.createElement('link');
+                manifestTag.rel = 'manifest';
+                doc.getElementsByTagName('head')[0].appendChild(manifestTag);
             }}
-            manifestLink.href = manifestUrl;
+            manifestTag.href = manifestUrl;
         </script>
         """
-        components.html(js_code, height=0, width=0)
+        components.html(js_pwa, height=0, width=0)
 
-# Ativar o PWA personalizado
-injetar_pwa_personalizado()
+# Chame a função logo após a configuração da página
+forcar_nome_e_icone_pwa()
 
 # --- CONEXÃO COM O SUPABASE (POOLER) ---
 SUPABASE_URL = "postgresql://postgres.jgzhlalaczpmecwqpofg:1723Rsh32335770@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
