@@ -7,79 +7,80 @@ import hashlib
 import os
 import warnings
 import streamlit.components.v1 as components
-import base64
+
+# --- INÍCIO DO CÓDIGO PARA FORÇAR O APP (PWA) PARA TODOS OS USUÁRIOS ---
+def aplicar_patch_pwa_universal():
+    import streamlit
+    # Encontra a pasta raiz do Streamlit no servidor atual
+    st_dir = os.path.dirname(streamlit.__file__)
+    static_dir = os.path.join(st_dir, "static")
+    index_path = os.path.join(static_dir, "index.html")
+    manifest_path = os.path.join(static_dir, "app_manifest.json")
+    favicon_path = os.path.join(static_dir, "favicon.png")
+
+    # 1. Substitui a coroa do Streamlit pelo seu Brasão
+    if os.path.exists("brasao.png"):
+        with open("brasao.png", "rb") as f_in:
+            with open(favicon_path, "wb") as f_out:
+                f_out.write(f_in.read())
+
+    # 2. Cria o arquivo de configuração do aplicativo (Manifesto) no servidor
+    manifest_content = """{
+      "name": "Efetivo OM",
+      "short_name": "Efetivo OM",
+      "start_url": "./",
+      "display": "standalone",
+      "background_color": "#0e1117",
+      "theme_color": "#0e1117",
+      "icons": [
+        {
+          "src": "./favicon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        },
+        {
+          "src": "./favicon.png",
+          "sizes": "512x512",
+          "type": "image/png"
+        }
+      ]
+    }"""
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        f.write(manifest_content)
+
+    # 3. Modifica o HTML base do Streamlit para ler o nosso manifesto
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        
+        alterou = False
+        # Troca o título da aba
+        if "<title>Streamlit</title>" in html:
+            html = html.replace("<title>Streamlit</title>", "<title>Efetivo OM</title>")
+            alterou = True
+            
+        # Insere o link para o aplicativo de celular
+        if 'app_manifest.json' not in html:
+            html = html.replace('<title>Efetivo OM</title>', '<title>Efetivo OM</title>\n    <link rel="manifest" href="./app_manifest.json" />')
+            alterou = True
+            
+        # Salva o HTML modificado de volta no servidor
+        if alterou:
+            with open(index_path, "w", encoding="utf-8") as f:
+                f.write(html)
+
+# Executa a modificação assim que o código liga
+try:
+    aplicar_patch_pwa_universal()
+except Exception as e:
+    pass # Ignora erros de permissão caso ocorram em ambientes muito restritos
+# --- FIM DO CÓDIGO PWA ---
 
 # Ignorar avisos desnecessários do pandas no terminal
 warnings.filterwarnings('ignore', category=UserWarning)
 
 # Configuração da página
-st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
-
-def forcar_nome_e_icone_pwa():
-    if os.path.exists("brasao.png"):
-        with open("brasao.png", "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-        
-        b64_img = f"data:image/png;base64,{encoded_string}"
-        
-        js_pwa = f"""
-        <script>
-            const doc = window.parent.document;
-
-            // 1. Alterar o título da aba do navegador para "Efetivo OM"
-            doc.title = "Efetivo OM";
-
-            // 2. Forçar o ícone (Favicon)
-            let linkIcon = doc.querySelector('link[rel="icon"]') || doc.createElement('link');
-            linkIcon.type = 'image/png';
-            linkIcon.rel = 'icon';
-            linkIcon.href = "{b64_img}";
-            doc.getElementsByTagName('head')[0].appendChild(linkIcon);
-
-            // 3. Forçar o ícone da Apple (iOS)
-            let appleIcon = doc.querySelector('link[rel="apple-touch-icon"]') || doc.createElement('link');
-            appleIcon.rel = 'apple-touch-icon';
-            appleIcon.href = "{b64_img}";
-            doc.getElementsByTagName('head')[0].appendChild(appleIcon);
-
-            // 4. Criar e injetar um Web App Manifest personalizado com o nome "Efetivo OM"
-            const customManifest = {{
-                "name": "Efetivo OM",
-                "short_name": "Efetivo OM",
-                "start_url": window.parent.location.href,
-                "display": "standalone",
-                "background_color": "#0e1117",
-                "theme_color": "#0e1117",
-                "icons": [
-                    {{
-                        "src": "{b64_img}",
-                        "sizes": "192x192",
-                        "type": "image/png"
-                    }},
-                    {{
-                        "src": "{b64_img}",
-                        "sizes": "512x512",
-                        "type": "image/png"
-                    }}
-                ]
-            }};
-
-            const stringBlob = new Blob([JSON.stringify(customManifest)], {{ type: 'application/json' }});
-            const manifestUrl = URL.createObjectURL(stringBlob);
-
-            let manifestTag = doc.querySelector('link[rel="manifest"]');
-            if (!manifestTag) {{
-                manifestTag = doc.createElement('link');
-                manifestTag.rel = 'manifest';
-                doc.getElementsByTagName('head')[0].appendChild(manifestTag);
-            }}
-            manifestTag.href = manifestUrl;
-        </script>
-        """
-        components.html(js_pwa, height=0, width=0)
-
-# Chame a função logo após a configuração da página
-forcar_nome_e_icone_pwa()
+st.set_page_config(page_title="Efetivo OM", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO COM O SUPABASE (POOLER) ---
 SUPABASE_URL = "postgresql://postgres.jgzhlalaczpmecwqpofg:1723Rsh32335770@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
