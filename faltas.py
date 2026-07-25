@@ -12,7 +12,7 @@ import streamlit.components.v1 as components
 warnings.filterwarnings('ignore', category=UserWarning)
 
 # Configuração da página
-st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Sistema de Controle de Efetivo e Faltas", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO COM O SUPABASE (POOLER) ---
 SUPABASE_URL = "postgresql://postgres.jgzhlalaczpmecwqpofg:1723Rsh32335770@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
