@@ -815,12 +815,13 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         
         df_mapa['STATUS'] = df_mapa.apply(lambda r: 'PRESENTE' if r['presenca']==1 else ('FALTOU' if r['falta']==1 else 'PENDENTE'), axis=1)
         
-        # Define as colunas que aparecerão no Mapa
-        colunas_exibicao_mapa = ['pg', 'nome_guerra', 'nome_completo', 'fracao', 'pelotao', 'STATUS', 'justificativa', 'ultimo_gerente', 'ultima_atualizacao']
-        
-        # Se NÃO for o Comandante da OM (ou seja, se for Cmt Pelotão), removemos a coluna do nome_completo do visual
+        # --- DEFINIÇÃO DA ORDEM DAS COLUNAS ---
         if not is_cmt_om:
-            colunas_exibicao_mapa.remove('nome_completo')
+            # Visão do Cmt de Pelotão: Ordem simplificada e focada no controle de presença
+            colunas_exibicao_mapa = ['pg', 'nome_guerra', 'STATUS', 'justificativa', 'ultima_atualizacao', 'ultimo_gerente', 'fracao', 'pelotao']
+        else:
+            # Visão do Cmt da OM: Mesma ordem lógica, mas incluindo o Nome Completo
+            colunas_exibicao_mapa = ['pg', 'nome_guerra', 'nome_completo', 'STATUS', 'justificativa', 'ultima_atualizacao', 'ultimo_gerente', 'fracao', 'pelotao']
         
         st.dataframe(df_mapa[colunas_exibicao_mapa], hide_index=True, use_container_width=True)
         
