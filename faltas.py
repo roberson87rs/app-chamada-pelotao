@@ -11,11 +11,15 @@ import streamlit.components.v1 as components
 # Ignorar avisos desnecessários do pandas no terminal
 warnings.filterwarnings('ignore', category=UserWarning)
 
-# Configuração da página (Limpa, para funcionar junto com a "Casca" do GitHub Pages)
+# Configuração da página
 st.set_page_config(page_title="Efetivo OM", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO COM O SUPABASE (POOLER) ---
 SUPABASE_URL = "postgresql://postgres.jgzhlalaczpmecwqpofg:1723Rsh32335770@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
+
+# Constantes Hierárquicas Globais
+ORDEM_HIERARQUICA = ["Gen Ex", "Gen Div", "Gen Bda", "Cel", "Ten Cel", "Maj", "Cap", "1º Ten", "2º Ten", "Asp Of", "S Ten", "1º Sgt", "2º Sgt", "3º Sgt", "Cb", "Sd EP", "Sd EV"]
+PG_UPPER_MAP = {rank.upper(): rank for rank in ORDEM_HIERARQUICA}
 
 def get_connection():
     return psycopg2.connect(SUPABASE_URL)
@@ -23,19 +27,14 @@ def get_connection():
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
-# --- FUNÇÃO PARA FORMATAR NOME COMPLETO AUTOMATICAMENTE ---
 def formatar_nome_completo(nome):
     if not nome:
         return ""
-    # Palavras que devem continuar minúsculas
     excecoes = ["de", "da", "do", "das", "dos", "e"]
-    # Transforma tudo em minúsculo e divide em palavras
     partes = nome.strip().lower().split()
-    # Capitaliza as palavras, exceto as da lista de exceções
     formatado = [p.capitalize() if p not in excecoes else p for p in partes]
     return " ".join(formatado)
 
-# --- CONFIGURAÇÃO INICIAL E ATUALIZAÇÃO DO SUPABASE ---
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
@@ -81,7 +80,7 @@ except Exception as e:
     st.error(f"Erro ao conectar ou atualizar o Supabase: {e}")
     st.stop()
 
-# --- GESTÃO DE SESSÃO E TEMPO DE INATIVIDADE (10 MINUTOS) ---
+# --- GESTÃO DE SESSÃO ---
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 if 'ultima_atividade' not in st.session_state:
@@ -97,7 +96,6 @@ if st.session_state.logado:
     else:
         st.session_state.ultima_atividade = tempo_atual
 
-# --- FUNÇÃO DE LOGIN ---
 def login():
     if os.path.exists("brasao.png"):
         col_img, col_txt = st.columns([1, 8])
@@ -157,6 +155,65 @@ def painel_convencional_comum():
                 else:
                     st.error("As senhas não coincidem.")
 
+# --- COMPONENTE COMPARTILHADO: PLANILHA DE FÉRIAS (COMANDANTES E ADMIN) ---
+def exibir_planilha_ferias(conn, filtro_pelotao=None):
+    st.subheader("🏖️ Planilha de Férias do Efetivo")
+    st.write("Acompanhe o cronograma de férias. Utilize os filtros abaixo para refinar a busca.")
+    
+    query_ferias = """
+        SELECT m.pg, m.nome as nome_guerra, m.nome_completo, m.fracao, m.pelotao, f.data_inicio, f.data_fim, f.bi 
+        FROM ferias f
+        INNER JOIN militares m ON f.identidade = m.identidade
+    """
+    if filtro_pelotao:
+        query_ferias += f" WHERE m.pelotao = '{filtro_pelotao}'"
+        
+    df_todas_ferias = pd.read_sql_query(query_ferias, conn)
+    
+    if not df_todas_ferias.empty:
+        # Converter datas e extrair o mês
+        df_todas_ferias['data_inicio'] = pd.to_datetime(df_todas_ferias['data_inicio'])
+        df_todas_ferias['Mês Início'] = df_todas_ferias['data_inicio'].dt.month.map(
+            {1:'Janeiro', 2:'Fevereiro', 3:'Março', 4:'Abril', 5:'Maio', 6:'Junho', 7:'Julho', 8:'Agosto', 9:'Setembro', 10:'Outubro', 11:'Novembro', 12:'Dezembro'}
+        )
+        
+        c_filt1, c_filt2 = st.columns(2)
+        with c_filt1:
+            meses_disp = df_todas_ferias['Mês Início'].dropna().unique().tolist()
+            filtro_mes = st.selectbox("Filtrar por Mês de Início", ["Todos"] + meses_disp)
+        with c_filt2:
+            pgs_unicos = df_todas_ferias['pg'].unique().tolist()
+            # Ordenar PGs únicos no filtro pela hierarquia
+            pgs_ordenados = [p for p in ORDEM_HIERARQUICA if p in pgs_unicos] + [p for p in pgs_unicos if p not in ORDEM_HIERARQUICA]
+            filtro_pg = st.selectbox("Filtrar por Posto/Graduação", ["Todos"] + pgs_ordenados)
+            
+        df_filtrado = df_todas_ferias.copy()
+        if filtro_mes != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['Mês Início'] == filtro_mes]
+        if filtro_pg != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['pg'] == filtro_pg]
+            
+        # Formatar as datas para o padrão Brasileiro antes de exibir
+        df_filtrado['data_inicio'] = df_filtrado['data_inicio'].dt.strftime('%d/%m/%Y')
+        df_filtrado['data_fim'] = pd.to_datetime(df_filtrado['data_fim']).dt.strftime('%d/%m/%Y')
+            
+        # Ordenar a tabela por hierarquia e depois por data
+        df_filtrado['pg_norm'] = df_filtrado['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_filtrado['pg'])
+        df_filtrado['pg_cat'] = pd.Categorical(df_filtrado['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
+        
+        # Colunas finais para exibição
+        colunas_exib = ['pg', 'nome_guerra', 'nome_completo', 'data_inicio', 'data_fim', 'fracao', 'pelotao', 'bi']
+        if filtro_pelotao:
+            colunas_exib.remove('pelotao') # Cmt Pelotão não precisa ver a coluna do próprio pelotão
+            
+        df_final = df_filtrado.sort_values(['data_inicio', 'pg_cat']).drop(columns=['pg_cat', 'pg_norm', 'Mês Início'])
+        
+        st.dataframe(df_final[colunas_exib], hide_index=True, use_container_width=True)
+        st.caption(f"Exibindo {len(df_final)} período(s) de férias cadastrado(s).")
+    else:
+        st.info("Nenhuma férias registrada no momento.")
+
+
 # --- PERFIL: USUÁRIO CONVENCIONAL ---
 def tela_convencional():
     st.title(f"👤 Painel do Militar - {st.session_state.pg} {st.session_state.nome_guerra}")
@@ -179,20 +236,57 @@ def tela_convencional():
                 st.success("✅ Aviso enviado ao Gerente da sua fração!")
                 
     with t_ferias:
-        st.info("💡 As férias registradas aqui preencherão a chamada da sua seção automaticamente.")
-        with st.form("form_ferias"):
-            c_f1, c_f2 = st.columns(2)
-            with c_f1: dt_inicio = st.date_input("Data Início das Férias")
-            with c_f2: dt_fim = st.date_input("Data Fim das Férias")
-            bi_pub = st.text_input("BI de Publicação (Ex: BI Nr 123, de 10 Ago)")
-            if st.form_submit_button("Gravar Férias"):
-                conn = get_connection()
+        st.info("💡 As datas registradas aqui preencherão a chamada da sua seção automaticamente no período correspondente.")
+        
+        conn = get_connection()
+        # Verificar se já tem férias cadastradas
+        df_minhas_ferias = pd.read_sql_query("SELECT data_inicio, data_fim, bi FROM ferias WHERE identidade = %s ORDER BY data_inicio", conn, params=(st.session_state.identidade_atual,))
+        
+        if not df_minhas_ferias.empty:
+            st.write("🗓️ **Seus Períodos de Férias Cadastrados:**")
+            # Converte para visualização BR
+            df_minhas_ferias['data_inicio'] = pd.to_datetime(df_minhas_ferias['data_inicio']).dt.strftime('%d/%m/%Y')
+            df_minhas_ferias['data_fim'] = pd.to_datetime(df_minhas_ferias['data_fim']).dt.strftime('%d/%m/%Y')
+            st.dataframe(df_minhas_ferias, hide_index=True, use_container_width=True)
+            
+            if st.button("🗑️ Apagar Registros e Começar de Novo", type="primary"):
                 cur = conn.cursor()
-                cur.execute("INSERT INTO ferias (identidade, data_inicio, data_fim, bi) VALUES (%s, %s, %s, %s)",
-                            (st.session_state.identidade_atual, dt_inicio, dt_fim, bi_pub))
+                cur.execute("DELETE FROM ferias WHERE identidade = %s", (st.session_state.identidade_atual,))
                 conn.commit()
-                conn.close()
-                st.success("✅ Férias registradas no sistema!")
+                st.success("✅ Registros apagados com sucesso! A página será atualizada.")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.write("⚖️ **Cadastrar Novo Período de Férias**")
+            num_parcelas = st.radio("Em quantas parcelas você deseja dividir suas férias?", [1, 2, 3], horizontal=True, help="1 parcela de 30 dias, 2 de 15 dias, ou 3 de 10 dias.")
+            
+            with st.form("form_ferias"):
+                datas_escolhidas = []
+                
+                # Gera as colunas dinamicamente baseado na escolha do usuário
+                for i in range(num_parcelas):
+                    st.markdown(f"**Parcela {i+1}**")
+                    c_f1, c_f2 = st.columns(2)
+                    with c_f1: dt_ini = st.date_input(f"Início da Parcela {i+1}", key=f"dt_ini_{i}")
+                    with c_f2: dt_fim = st.date_input(f"Fim da Parcela {i+1}", key=f"dt_fim_{i}")
+                    datas_escolhidas.append((dt_ini, dt_fim))
+                    
+                bi_pub = st.text_input("BI de Publicação (Opcional. Ex: BI Nr 123)")
+                
+                if st.form_submit_button("Gravar Férias no Sistema"):
+                    cur = conn.cursor()
+                    try:
+                        for dt_ini, dt_fim in datas_escolhidas:
+                            cur.execute("INSERT INTO ferias (identidade, data_inicio, data_fim, bi) VALUES (%s, %s, %s, %s)",
+                                        (st.session_state.identidade_atual, dt_ini, dt_fim, bi_pub))
+                        conn.commit()
+                        st.success("✅ Férias registradas no sistema! Atualizando...")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Erro ao salvar: {e}")
+        conn.close()
 
     with t_viagem:
         st.write("Livro de Registro de Viagens (Visível aos Comandantes)")
@@ -262,7 +356,6 @@ def tela_gerente():
     tab_chamada, tab_plano = st.tabs(["📋 Chamada Diária", "📞 Plano de Chamada (Contatos)"])
     
     with tab_chamada:
-        # Recupera avisos de ausência da fração
         df_ausencias = pd.read_sql_query("SELECT nome_militar as Militar, data_prevista as Data, motivo as Motivo FROM ausencias_futuras WHERE fracao = %s ORDER BY data_prevista ASC", conn, params=(st.session_state.fracao,))
         if not df_ausencias.empty:
             with st.expander(f"⚠️ Você tem {len(df_ausencias)} aviso(s) de ausência na sua fração (Clique para ver)"):
@@ -288,13 +381,10 @@ def tela_gerente():
                 df_militares.at[index, 'presenca'] = False
                 df_militares.at[index, 'justificativa'] = f"Férias ({ferias_ativas[row['identidade']]})"
                 
-        ordem_hierarquica = ["Gen Ex", "Gen Div", "Gen Bda", "Cel", "Ten Cel", "Maj", "Cap", "1º Ten", "2º Ten", "Asp Of", "S Ten", "1º Sgt", "2º Sgt", "3º Sgt", "Cb", "Sd EP", "Sd EV"]
-        pg_upper_map = {rank.upper(): rank for rank in ordem_hierarquica}
-        df_militares['pg_norm'] = df_militares['pg'].str.upper().map(pg_upper_map).fillna(df_militares['pg'])
-        df_militares['pg_cat'] = pd.Categorical(df_militares['pg_norm'], categories=ordem_hierarquica, ordered=True)
+        df_militares['pg_norm'] = df_militares['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_militares['pg'])
+        df_militares['pg_cat'] = pd.Categorical(df_militares['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
         df_militares = df_militares.sort_values(['pg_cat', 'nome']).drop(columns=['pg_cat', 'pg_norm'])
         
-        # O formulário impede o recarregamento automático (lag) da página ao clicar nas caixas
         with st.form("form_chamada_diaria"):
             editado = st.data_editor(
                 df_militares,
@@ -327,8 +417,8 @@ def tela_gerente():
         st.info("Abaixo constam os dados de contato atuais da sua fração (Apenas visualização).")
         df_contatos = pd.read_sql_query("SELECT pg, nome as nome_guerra, celular, whatsapp, telefone as residencial, email, endereco FROM militares WHERE fracao = %s", conn, params=(st.session_state.fracao,))
         
-        df_contatos['pg_norm'] = df_contatos['pg'].str.upper().map(pg_upper_map).fillna(df_contatos['pg'])
-        df_contatos['pg_cat'] = pd.Categorical(df_contatos['pg_norm'], categories=ordem_hierarquica, ordered=True)
+        df_contatos['pg_norm'] = df_contatos['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_contatos['pg'])
+        df_contatos['pg_cat'] = pd.Categorical(df_contatos['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
         df_contatos = df_contatos.sort_values(['pg_cat', 'nome_guerra']).drop(columns=['pg_cat', 'pg_norm'])
         
         st.dataframe(df_contatos, hide_index=True, use_container_width=True)
@@ -348,7 +438,7 @@ def tela_administrador():
     fracoes_bd = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE status = 'APROVADA'", conn)['nome_fracao'].tolist()
     todas_fracoes_bd = pd.read_sql_query("SELECT nome_fracao FROM fracoes", conn)['nome_fracao'].tolist()
     
-    abas_nomes = ["🏢 Estrutura (Pel/Fração)", "👥 Gestão de Efetivo", "🔑 Acessos", "📨 Solicitações (Pessoal e Contatos)"]
+    abas_nomes = ["🏢 Estrutura (Pel/Fração)", "👥 Gestão de Efetivo", "🔑 Acessos", "📨 Solicitações", "🏖️ Gestão de Férias"]
     if is_super_admin: abas_nomes.append("🦸‍♂️ Restauração (Lixeira)")
         
     abas = st.tabs(abas_nomes)
@@ -438,7 +528,6 @@ def tela_administrador():
                     cur.execute("DELETE FROM ausencias_futuras")
                     cur.execute("DELETE FROM ferias")
                     cur.execute("DELETE FROM viagens")
-                    # Zera o status de todo mundo na tabela principal
                     cur.execute("UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-'")
                     conn.commit()
                     st.success("✅ Histórico de faltas limpo com sucesso!")
@@ -535,12 +624,9 @@ def tela_administrador():
             df_all = pd.DataFrame()
             st.error(f"Erro ao carregar efetivo: {e}")
         
-        ordem_hierarquica = ["Gen Ex", "Gen Div", "Gen Bda", "Cel", "Ten Cel", "Maj", "Cap", "1º Ten", "2º Ten", "Asp Of", "S Ten", "1º Sgt", "2º Sgt", "3º Sgt", "Cb", "Sd EP", "Sd EV"]
-        
         if not df_all.empty:
-            pg_upper_map = {rank.upper(): rank for rank in ordem_hierarquica}
-            df_all['pg_norm'] = df_all['pg'].str.upper().map(pg_upper_map).fillna(df_all['pg'])
-            df_all['pg_cat'] = pd.Categorical(df_all['pg_norm'], categories=ordem_hierarquica, ordered=True)
+            df_all['pg_norm'] = df_all['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_all['pg'])
+            df_all['pg_cat'] = pd.Categorical(df_all['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
             df_all = df_all.sort_values(['pg_cat', 'nome'])
             df_exibicao = df_all.drop(columns=['pg_cat', 'pg_norm'])
             
@@ -584,7 +670,7 @@ def tela_administrador():
                         conn.rollback()
                         st.error(f"Erro ao resetar: {e}")
 
-            with st.expander("✏️ Editar Dados do Militar Selecionado (Pelotão, Fração e Nomes)"):
+            with st.expander("✏️ Editar Dados do Militar Selecionado"):
                 if militar_selecionado:
                     idt_edit = militar_selecionado.split(" - ")[0]
                     dados_edit = df_all[df_all['identidade'] == idt_edit].iloc[0]
@@ -603,7 +689,6 @@ def tela_administrador():
                             cur = conn.cursor()
                             try:
                                 e_completo_fmt = formatar_nome_completo(e_completo)
-                                
                                 cur.execute("UPDATE militares SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo_fmt, e_pelotao, e_fracao, idt_edit))
                                 cur.execute("UPDATE usuarios SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo_fmt, e_pelotao, e_fracao, idt_edit))
                                 conn.commit()
@@ -768,8 +853,11 @@ def tela_administrador():
         else:
             st.info("Nenhuma solicitação de alteração de contatos no momento.")
 
+    with abas[4]:
+        exibir_planilha_ferias(conn, filtro_pelotao=None)
+
     if is_super_admin:
-        with abas[4]:
+        with abas[5]:
             st.subheader("🦸‍♂️ Lixeira do Sistema")
             df_backup = pd.read_sql_query("SELECT id, data_exclusao, identidade, pg, nome FROM backup_deletados ORDER BY id DESC", conn)
             if not df_backup.empty:
@@ -829,10 +917,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             df_militares.at[index, 'ultimo_gerente'] = "Sistema Automático"
             df_militares.at[index, 'ultima_atualizacao'] = agora_exibicao
             
-    ordem_hierarquica = ["Gen Ex", "Gen Div", "Gen Bda", "Cel", "Ten Cel", "Maj", "Cap", "1º Ten", "2º Ten", "Asp Of", "S Ten", "1º Sgt", "2º Sgt", "3º Sgt", "Cb", "Sd EP", "Sd EV"]
-    pg_upper_map = {rank.upper(): rank for rank in ordem_hierarquica}
-            
-    abas_nomes = ["🗺️ MAPA", "✈️ Livro de Viagens", "📋 Plano de Chamada"]
+    abas_nomes = ["🗺️ MAPA", "✈️ Livro de Viagens", "📋 Plano de Chamada", "🏖️ Planilha de Férias"]
     if is_cmt_om: 
         abas_nomes.extend(["📚 Histórico de Faltas", "🛡️ Estrutura de Segurança (Cargos)"])
     else: 
@@ -844,11 +929,10 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         st.subheader(f"Mapa Geral - {filtro_pelotao if filtro_pelotao else 'OM'}")
         df_mapa = df_militares.copy()
         
-        df_mapa['pg_norm'] = df_mapa['pg'].str.upper().map(pg_upper_map).fillna(df_mapa['pg'])
-        df_mapa['pg_cat'] = pd.Categorical(df_mapa['pg_norm'], categories=ordem_hierarquica, ordered=True)
+        df_mapa['pg_norm'] = df_mapa['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_mapa['pg'])
+        df_mapa['pg_cat'] = pd.Categorical(df_mapa['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
         df_mapa = df_mapa.sort_values(['pg_cat', 'nome_guerra']).drop(columns=['pg_cat', 'pg_norm'])
         
-        # --- LÓGICA ATUALIZADA DO STATUS (Faltas vs Férias) ---
         def determinar_status(row):
             if row['presenca'] == 1: return 'PRESENTE'
             if row['falta'] == 1:
@@ -866,7 +950,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         
         st.dataframe(df_mapa[colunas_exibicao_mapa], hide_index=True, use_container_width=True)
         
-        # --- MÉTRICAS ATUALIZADAS (5 BLOCOS) ---
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Efetivo Total", len(df_mapa))
         c2.metric("Presentes", len(df_mapa[df_mapa['STATUS'] == 'PRESENTE']))
@@ -874,7 +957,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         c4.metric("Férias", len(df_mapa[df_mapa['STATUS'] == 'FÉRIAS']))
         c5.metric("Pendentes", len(df_mapa[df_mapa['STATUS'] == 'PENDENTE']))
         
-        # --- NOVO RESUMO E ALERTAS DE FALTOSOS E PENDENTES ---
         st.markdown("---")
         col_resumo, col_avisos = st.columns([2, 1])
         
@@ -895,7 +977,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             else:
                 st.success("Todas as seções lançaram a chamada!")
         
-        # Botão de Consolidar
         if not is_cmt_om:
             st.markdown("---")
             if st.button("✔️ Finalizar e Consolidar Chamada do Pelotão", type="primary"):
@@ -948,14 +1029,17 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         else:
             df_plano = pd.read_sql_query("SELECT pg, nome as nome_guerra, nome_completo, fracao, pelotao, celular, whatsapp, telefone as residencial, email, endereco FROM militares", conn)
             
-        df_plano['pg_norm'] = df_plano['pg'].str.upper().map(pg_upper_map).fillna(df_plano['pg'])
-        df_plano['pg_cat'] = pd.Categorical(df_plano['pg_norm'], categories=ordem_hierarquica, ordered=True)
+        df_plano['pg_norm'] = df_plano['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_plano['pg'])
+        df_plano['pg_cat'] = pd.Categorical(df_plano['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
         df_plano = df_plano.sort_values(['pg_cat', 'nome_guerra']).drop(columns=['pg_cat', 'pg_norm'])
         
         st.dataframe(df_plano, hide_index=True, use_container_width=True)
+
+    with abas[3]: # PLANILHA DE FÉRIAS
+        exibir_planilha_ferias(conn, filtro_pelotao)
         
     if is_cmt_om:
-        with abas[3]: # HISTÓRICO OM
+        with abas[4]: # HISTÓRICO OM
             st.subheader("Histórico de Faltas Consolidado")
             st.write("Filtre o histórico por data para visualização e impressão.")
             data_filtro = st.date_input("Selecione a Data")
@@ -988,7 +1072,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             else:
                 st.info(f"Nenhuma chamada foi consolidada no banco de dados no dia {data_str}.")
 
-        with abas[4]: # ESTRUTURA DE SEGURANÇA (CARGOS CHAVE) PARA CMT OM
+        with abas[5]: # ESTRUTURA DE SEGURANÇA
             st.subheader("🛡️ Estrutura de Segurança e Gestão (Cargos Chave da OM)")
             st.write("Lista oficial de todos os militares que possuem funções e perfis administrativos ou gerenciais no sistema.")
             
@@ -1004,7 +1088,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             else:
                 st.info("Nenhum perfil especial atribuído além do padrão convencional no momento.")
     else:
-        with abas[3]: # GESTÃO FRAÇÃO E GERENTES
+        with abas[4]: # GESTÃO FRAÇÃO E GERENTES
             st.subheader(f"Gestão de Frações - {filtro_pelotao}")
             with st.form("solicitar_fracao"):
                 nova_f = st.text_input("Solicitar Criação de Nova Fração para o seu Pelotão")
@@ -1045,7 +1129,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             else:
                 st.info("Cadastre frações e militares no seu pelotão para indicar gerentes.")
                         
-        with abas[4]: # GESTÃO DE EFETIVO
+        with abas[5]: # GESTÃO DE EFETIVO
             st.subheader("👥 Gestão e Movimentação de Efetivo")
             
             pelotoes_cadastrados = pd.read_sql_query("SELECT nome_pelotao FROM pelotoes", conn)['nome_pelotao'].tolist()
