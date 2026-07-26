@@ -8,78 +8,10 @@ import os
 import warnings
 import streamlit.components.v1 as components
 
-# --- INÍCIO DO CÓDIGO PARA FORÇAR O APP (PWA) PARA TODOS OS USUÁRIOS ---
-def aplicar_patch_pwa_universal():
-    import streamlit
-    # Encontra a pasta raiz do Streamlit no servidor atual
-    st_dir = os.path.dirname(streamlit.__file__)
-    static_dir = os.path.join(st_dir, "static")
-    index_path = os.path.join(static_dir, "index.html")
-    manifest_path = os.path.join(static_dir, "app_manifest.json")
-    favicon_path = os.path.join(static_dir, "favicon.png")
-
-    # 1. Substitui a coroa do Streamlit pelo seu Brasão
-    if os.path.exists("brasao.png"):
-        with open("brasao.png", "rb") as f_in:
-            with open(favicon_path, "wb") as f_out:
-                f_out.write(f_in.read())
-
-    # 2. Cria o arquivo de configuração do aplicativo (Manifesto) no servidor
-    manifest_content = """{
-      "name": "Efetivo OM",
-      "short_name": "Efetivo OM",
-      "start_url": "./",
-      "display": "standalone",
-      "background_color": "#0e1117",
-      "theme_color": "#0e1117",
-      "icons": [
-        {
-          "src": "./favicon.png",
-          "sizes": "192x192",
-          "type": "image/png"
-        },
-        {
-          "src": "./favicon.png",
-          "sizes": "512x512",
-          "type": "image/png"
-        }
-      ]
-    }"""
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write(manifest_content)
-
-    # 3. Modifica o HTML base do Streamlit para ler o nosso manifesto
-    if os.path.exists(index_path):
-        with open(index_path, "r", encoding="utf-8") as f:
-            html = f.read()
-        
-        alterou = False
-        # Troca o título da aba
-        if "<title>Streamlit</title>" in html:
-            html = html.replace("<title>Streamlit</title>", "<title>Efetivo OM</title>")
-            alterou = True
-            
-        # Insere o link para o aplicativo de celular
-        if 'app_manifest.json' not in html:
-            html = html.replace('<title>Efetivo OM</title>', '<title>Efetivo OM</title>\n    <link rel="manifest" href="./app_manifest.json" />')
-            alterou = True
-            
-        # Salva o HTML modificado de volta no servidor
-        if alterou:
-            with open(index_path, "w", encoding="utf-8") as f:
-                f.write(html)
-
-# Executa a modificação assim que o código liga
-try:
-    aplicar_patch_pwa_universal()
-except Exception as e:
-    pass # Ignora erros de permissão caso ocorram em ambientes muito restritos
-# --- FIM DO CÓDIGO PWA ---
-
 # Ignorar avisos desnecessários do pandas no terminal
 warnings.filterwarnings('ignore', category=UserWarning)
 
-# Configuração da página
+# Configuração da página (Limpa, para funcionar junto com a "Casca" do GitHub Pages)
 st.set_page_config(page_title="Efetivo OM", page_icon="brasao.png", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXÃO COM O SUPABASE (POOLER) ---
@@ -90,6 +22,18 @@ def get_connection():
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
+
+# --- FUNÇÃO PARA FORMATAR NOME COMPLETO AUTOMATICAMENTE ---
+def formatar_nome_completo(nome):
+    if not nome:
+        return ""
+    # Palavras que devem continuar minúsculas
+    excecoes = ["de", "da", "do", "das", "dos", "e"]
+    # Transforma tudo em minúsculo e divide em palavras
+    partes = nome.strip().lower().split()
+    # Capitaliza as palavras, exceto as da lista de exceções
+    formatado = [p.capitalize() if p not in excecoes else p for p in partes]
+    return " ".join(formatado)
 
 # --- CONFIGURAÇÃO INICIAL E ATUALIZAÇÃO DO SUPABASE ---
 def init_db():
@@ -119,13 +63,6 @@ def init_db():
                         status TEXT DEFAULT 'PENDENTE'
                     )''')
     
-    conn.commit()
-
-    cursor.execute('''
-        INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao)
-        SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios
-        ON CONFLICT (identidade) DO NOTHING
-    ''')
     conn.commit()
     
     cursor.execute("SELECT COUNT(*) FROM usuarios WHERE identidade = '000000'")
@@ -509,25 +446,28 @@ def tela_administrador():
             if st.form_submit_button("Cadastrar Novo Militar"):
                 cur = conn.cursor()
                 try:
+                    # Aplica a formatação inteligente (Title Case) no nome completo
+                    novo_nome_completo_fmt = formatar_nome_completo(novo_nome_completo)
+                    
                     cur.execute("SELECT COUNT(*) FROM militares WHERE identidade = %s", (nova_identidade,))
                     existe_mil = cur.fetchone()[0] > 0
                     
                     if existe_mil:
                         cur.execute("""UPDATE militares SET pg = %s, nome = %s, nome_completo = %s, fracao = %s, pelotao = %s WHERE identidade = %s""",
-                                    (novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido, nova_identidade))
+                                    (novo_pg, novo_nome_guerra, novo_nome_completo_fmt, nova_fracao, admin_pel_escolhido, nova_identidade))
                     else:
                         cur.execute("""INSERT INTO militares (identidade, pg, nome, nome_completo, fracao, pelotao) VALUES (%s, %s, %s, %s, %s, %s)""", 
-                                    (nova_identidade, novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido))
+                                    (nova_identidade, novo_pg, novo_nome_guerra, novo_nome_completo_fmt, nova_fracao, admin_pel_escolhido))
                     
                     cur.execute("SELECT COUNT(*) FROM usuarios WHERE identidade = %s", (nova_identidade,))
                     existe_usr = cur.fetchone()[0] > 0
                     
                     if not existe_usr:
                         cur.execute("""INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                    (novo_nome_guerra.lower(), nova_identidade, hash_senha("1234"), novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido, "Convencional"))
+                                    (novo_nome_guerra.lower(), nova_identidade, hash_senha("1234"), novo_pg, novo_nome_guerra, novo_nome_completo_fmt, nova_fracao, admin_pel_escolhido, "Convencional"))
                     else:
                         cur.execute("""UPDATE usuarios SET pg = %s, nome = %s, nome_completo = %s, fracao = %s, pelotao = %s WHERE identidade = %s""",
-                                    (novo_pg, novo_nome_guerra, novo_nome_completo, nova_fracao, admin_pel_escolhido, nova_identidade))
+                                    (novo_pg, novo_nome_guerra, novo_nome_completo_fmt, nova_fracao, admin_pel_escolhido, nova_identidade))
                         
                     conn.commit()
                     st.success("Militar cadastrado com sucesso! (Senha padrão: 1234)")
@@ -626,8 +566,11 @@ def tela_administrador():
                         if st.form_submit_button("Salvar Edição"):
                             cur = conn.cursor()
                             try:
-                                cur.execute("UPDATE militares SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo, e_pelotao, e_fracao, idt_edit))
-                                cur.execute("UPDATE usuarios SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo, e_pelotao, e_fracao, idt_edit))
+                                # Aplica formatação Title Case no nome editado também
+                                e_completo_fmt = formatar_nome_completo(e_completo)
+                                
+                                cur.execute("UPDATE militares SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo_fmt, e_pelotao, e_fracao, idt_edit))
+                                cur.execute("UPDATE usuarios SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo_fmt, e_pelotao, e_fracao, idt_edit))
                                 conn.commit()
                                 st.success("Dados alterados com sucesso!")
                                 st.rerun()
@@ -872,7 +815,14 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         
         df_mapa['STATUS'] = df_mapa.apply(lambda r: 'PRESENTE' if r['presenca']==1 else ('FALTOU' if r['falta']==1 else 'PENDENTE'), axis=1)
         
-        st.dataframe(df_mapa[['pg', 'nome_guerra', 'nome_completo', 'fracao', 'pelotao', 'STATUS', 'justificativa', 'ultimo_gerente', 'ultima_atualizacao']], hide_index=True, use_container_width=True)
+        # Define as colunas que aparecerão no Mapa
+        colunas_exibicao_mapa = ['pg', 'nome_guerra', 'nome_completo', 'fracao', 'pelotao', 'STATUS', 'justificativa', 'ultimo_gerente', 'ultima_atualizacao']
+        
+        # Se NÃO for o Comandante da OM (ou seja, se for Cmt Pelotão), removemos a coluna do nome_completo do visual
+        if not is_cmt_om:
+            colunas_exibicao_mapa.remove('nome_completo')
+        
+        st.dataframe(df_mapa[colunas_exibicao_mapa], hide_index=True, use_container_width=True)
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Efetivo Total", len(df_mapa))
@@ -1013,7 +963,8 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                     mil_opcoes = militares_pelotao_ativo['identidade'] + " - " + militares_pelotao_ativo['pg'] + " " + militares_pelotao_ativo['nome']
                     sel_mil_gerente = st.selectbox("Selecione o Militar para ser Gerente", mil_opcoes)
                     
-                    if st.form_submit_button("Solicitar Atribuição de Gerente"):
+                    # Nome do botão alterado para dar mais clareza de fluxo
+                    if st.form_submit_button("Solicitar Atribuição de Gerente ao Administrador"):
                         idt_g = sel_mil_gerente.split(" - ")[0]
                         m_row = militares_pelotao_ativo[militares_pelotao_ativo['identidade'] == idt_g].iloc[0]
                         cur = conn.cursor()
@@ -1084,9 +1035,12 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                     if i_idt and i_pg and i_guerra:
                         cur = conn.cursor()
                         try:
+                            # Aplica formatação automática Title Case aqui também
+                            i_completo_fmt = formatar_nome_completo(i_completo)
+                            
                             cur.execute("""INSERT INTO solicitacoes_pessoal (tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino, status)
                                            VALUES ('INCLUSAO', %s, %s, %s, %s, %s, %s, 'PENDENTE')""",
-                                        (i_idt, i_pg, i_guerra, i_completo, filtro_pelotao, i_fracao))
+                                        (i_idt, i_pg, i_guerra, i_completo_fmt, filtro_pelotao, i_fracao))
                             conn.commit()
                             st.success("✅ Solicitação de inclusão enviada ao Administrador!")
                         except Exception as e:
