@@ -171,7 +171,6 @@ def exibir_planilha_ferias(conn, filtro_pelotao=None):
     df_todas_ferias = pd.read_sql_query(query_ferias, conn)
     
     if not df_todas_ferias.empty:
-        # Converter datas e extrair o mês
         df_todas_ferias['data_inicio'] = pd.to_datetime(df_todas_ferias['data_inicio'])
         df_todas_ferias['Mês Início'] = df_todas_ferias['data_inicio'].dt.month.map(
             {1:'Janeiro', 2:'Fevereiro', 3:'Março', 4:'Abril', 5:'Maio', 6:'Junho', 7:'Julho', 8:'Agosto', 9:'Setembro', 10:'Outubro', 11:'Novembro', 12:'Dezembro'}
@@ -183,7 +182,6 @@ def exibir_planilha_ferias(conn, filtro_pelotao=None):
             filtro_mes = st.selectbox("Filtrar por Mês de Início", ["Todos"] + meses_disp)
         with c_filt2:
             pgs_unicos = df_todas_ferias['pg'].unique().tolist()
-            # Ordenar PGs únicos no filtro pela hierarquia
             pgs_ordenados = [p for p in ORDEM_HIERARQUICA if p in pgs_unicos] + [p for p in pgs_unicos if p not in ORDEM_HIERARQUICA]
             filtro_pg = st.selectbox("Filtrar por Posto/Graduação", ["Todos"] + pgs_ordenados)
             
@@ -193,18 +191,15 @@ def exibir_planilha_ferias(conn, filtro_pelotao=None):
         if filtro_pg != "Todos":
             df_filtrado = df_filtrado[df_filtrado['pg'] == filtro_pg]
             
-        # Formatar as datas para o padrão Brasileiro antes de exibir
         df_filtrado['data_inicio'] = df_filtrado['data_inicio'].dt.strftime('%d/%m/%Y')
         df_filtrado['data_fim'] = pd.to_datetime(df_filtrado['data_fim']).dt.strftime('%d/%m/%Y')
             
-        # Ordenar a tabela por hierarquia e depois por data
         df_filtrado['pg_norm'] = df_filtrado['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_filtrado['pg'])
         df_filtrado['pg_cat'] = pd.Categorical(df_filtrado['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
         
-        # Colunas finais para exibição
         colunas_exib = ['pg', 'nome_guerra', 'nome_completo', 'data_inicio', 'data_fim', 'fracao', 'pelotao', 'bi']
         if filtro_pelotao:
-            colunas_exib.remove('pelotao') # Cmt Pelotão não precisa ver a coluna do próprio pelotão
+            colunas_exib.remove('pelotao')
             
         df_final = df_filtrado.sort_values(['data_inicio', 'pg_cat']).drop(columns=['pg_cat', 'pg_norm', 'Mês Início'])
         
@@ -239,12 +234,10 @@ def tela_convencional():
         st.info("💡 As datas registradas aqui preencherão a chamada da sua seção automaticamente no período correspondente.")
         
         conn = get_connection()
-        # Verificar se já tem férias cadastradas
         df_minhas_ferias = pd.read_sql_query("SELECT data_inicio, data_fim, bi FROM ferias WHERE identidade = %s ORDER BY data_inicio", conn, params=(st.session_state.identidade_atual,))
         
         if not df_minhas_ferias.empty:
             st.write("🗓️ **Seus Períodos de Férias Cadastrados:**")
-            # Converte para visualização BR
             df_minhas_ferias['data_inicio'] = pd.to_datetime(df_minhas_ferias['data_inicio']).dt.strftime('%d/%m/%Y')
             df_minhas_ferias['data_fim'] = pd.to_datetime(df_minhas_ferias['data_fim']).dt.strftime('%d/%m/%Y')
             st.dataframe(df_minhas_ferias, hide_index=True, use_container_width=True)
@@ -262,8 +255,6 @@ def tela_convencional():
             
             with st.form("form_ferias"):
                 datas_escolhidas = []
-                
-                # Gera as colunas dinamicamente baseado na escolha do usuário
                 for i in range(num_parcelas):
                     st.markdown(f"**Parcela {i+1}**")
                     c_f1, c_f2 = st.columns(2)
@@ -772,7 +763,12 @@ def tela_administrador():
         
         if not df_req_pessoal.empty:
             for idx, row in df_req_pessoal.iterrows():
-                with st.expander(f"📌 [{row['tipo']}] {row['pg']} {row['nome']} ➔ Destino/Fração: {row['pelotao_destino']} / {row['fracao_destino']}"):
+                # Formatação condicional para exibir o tipo da solicitação de forma clara
+                acao_texto = f"Destino/Fração: {row['pelotao_destino']} / {row['fracao_destino']}"
+                if row['tipo'] == 'REMOVER_GERENTE':
+                    acao_texto = f"Solicitação de DESTITUIÇÃO do perfil de GERENTE ({row['pelotao_destino']})"
+                    
+                with st.expander(f"📌 [{row['tipo']}] {row['pg']} {row['nome']} ➔ {acao_texto}"):
                     st.write(f"**Identidade:** {row['identidade']} | **Nome Completo:** {row['nome_completo']}")
                     c_acc_p, c_rej_p = st.columns(2)
                     
@@ -804,6 +800,18 @@ def tela_administrador():
                                 
                                 cur.execute("UPDATE usuarios SET perfil = %s, fracao = %s, pelotao = %s WHERE identidade = %s", (novo_perfil_str, row['fracao_destino'], row['pelotao_destino'], row['identidade']))
                                 cur.execute("UPDATE militares SET fracao = %s, pelotao = %s WHERE identidade = %s", (row['fracao_destino'], row['pelotao_destino'], row['identidade']))
+                                
+                            elif row['tipo'] == 'REMOVER_GERENTE':
+                                cur.execute("SELECT perfil FROM usuarios WHERE identidade = %s", (row['identidade'],))
+                                u_res = cur.fetchone()
+                                if u_res and u_res[0]:
+                                    perfis_atuais = [p.strip() for p in u_res[0].split(',')]
+                                    if "Gerente" in perfis_atuais:
+                                        perfis_atuais.remove("Gerente")
+                                    if not perfis_atuais:
+                                        perfis_atuais = ["Convencional"]
+                                    novo_perfil_str = ",".join(perfis_atuais)
+                                    cur.execute("UPDATE usuarios SET perfil = %s WHERE identidade = %s", (novo_perfil_str, row['identidade']))
                             
                             cur.execute("UPDATE solicitacoes_pessoal SET status = 'APROVADA' WHERE id = %s", (row['id'],))
                             conn.commit()
@@ -968,6 +976,14 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             else:
                 st.success("Nenhum militar faltoso no momento.")
                 
+            # --- NOVA SEÇÃO: MILITARES PENDENTES ---
+            st.write("⏳ **Militares Pendentes (Aguardando Chamada)**")
+            df_pendentes_militares = df_mapa[df_mapa['STATUS'] == 'PENDENTE'][['pg', 'nome_guerra', 'fracao']]
+            if not df_pendentes_militares.empty:
+                st.dataframe(df_pendentes_militares, hide_index=True, use_container_width=True)
+            else:
+                st.success("Nenhum militar pendente. Chamada completa!")
+                
         with col_avisos:
             st.write("⚠️ **Frações Pendentes (Não tiraram a falta)**")
             fracoes_pendentes = df_mapa[df_mapa['STATUS'] == 'PENDENTE']['fracao'].unique()
@@ -1103,7 +1119,43 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                         st.error(f"Erro ao solicitar fração: {e}")
             
             st.markdown("---")
-            st.subheader("👔 Indicar Gerente para Fração")
+            
+            st.subheader("👨‍💼 Gerentes Atuais do Pelotão")
+            df_gerentes_atuais = pd.read_sql_query(
+                "SELECT identidade, pg, nome as nome_guerra, fracao FROM usuarios WHERE pelotao = %s AND perfil LIKE '%%Gerente%%'", 
+                conn, params=(filtro_pelotao,)
+            )
+            
+            if not df_gerentes_atuais.empty:
+                df_exib_gerentes = df_gerentes_atuais[['pg', 'nome_guerra', 'fracao']].rename(columns={'pg': 'P/G', 'nome_guerra': 'Nome de Guerra', 'fracao': 'Fração Base'})
+                st.dataframe(df_exib_gerentes, hide_index=True, use_container_width=True)
+                
+                with st.expander("❌ Deseja Destituir algum Gerente Atual?"):
+                    with st.form("form_remover_gerente"):
+                        st.write("A solicitação será enviada ao Administrador para aprovação.")
+                        opcoes_remover = df_gerentes_atuais['identidade'] + " - " + df_gerentes_atuais['pg'] + " " + df_gerentes_atuais['nome_guerra'] + " (" + df_gerentes_atuais['fracao'] + ")"
+                        sel_remover = st.selectbox("Selecione o Gerente para Remoção", opcoes_remover)
+                        
+                        if st.form_submit_button("Solicitar Destituição ao Administrador"):
+                            idt_rem = sel_remover.split(" - ")[0]
+                            cur = conn.cursor()
+                            cur.execute("SELECT pg, nome, nome_completo FROM militares WHERE identidade = %s", (idt_rem,))
+                            m_data = cur.fetchone()
+                            try:
+                                cur.execute("""INSERT INTO solicitacoes_pessoal (tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino, status)
+                                               VALUES ('REMOVER_GERENTE', %s, %s, %s, %s, %s, %s, 'PENDENTE')""",
+                                            (idt_rem, m_data[0], m_data[1], m_data[2], filtro_pelotao, 'N/A'))
+                                conn.commit()
+                                st.success("✅ Solicitação de remoção de gerente enviada ao Administrador!")
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Erro ao enviar solicitação: {e}")
+            else:
+                st.info("Não há nenhum gerente cadastrado ou em atividade no seu pelotão.")
+                
+            st.markdown("---")
+
+            st.subheader("👔 Indicar Novo Gerente para Fração")
             fracoes_pelotao_ativo = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(filtro_pelotao,))['nome_fracao'].tolist()
             militares_pelotao_ativo = pd.read_sql_query("SELECT identidade, pg, nome FROM militares WHERE pelotao = %s", conn, params=(filtro_pelotao,))
             
