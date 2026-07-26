@@ -176,7 +176,7 @@ def tela_convencional():
                                (f"{st.session_state.pg} {st.session_state.nome_guerra}", st.session_state.fracao, str(data_prevista), motivo))
                 conn.commit()
                 conn.close()
-                st.success("✅ Aviso enviado ao Chefe da Seção!")
+                st.success("✅ Aviso enviado ao Gerente da sua fração!")
                 
     with t_ferias:
         st.info("💡 As férias registradas aqui preencherão a chamada da sua seção automaticamente.")
@@ -262,6 +262,21 @@ def tela_gerente():
     tab_chamada, tab_plano = st.tabs(["📋 Chamada Diária", "📞 Plano de Chamada (Contatos)"])
     
     with tab_chamada:
+        # Recupera avisos de ausência da fração
+        df_ausencias = pd.read_sql_query("SELECT nome_militar as Militar, data_prevista as Data, motivo as Motivo FROM ausencias_futuras WHERE fracao = %s ORDER BY data_prevista ASC", conn, params=(st.session_state.fracao,))
+        if not df_ausencias.empty:
+            with st.expander(f"⚠️ Você tem {len(df_ausencias)} aviso(s) de ausência na sua fração (Clique para ver)"):
+                st.dataframe(df_ausencias, hide_index=True, use_container_width=True)
+                if st.button("Limpar Todos os Avisos Recebidos"):
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM ausencias_futuras WHERE fracao = %s", (st.session_state.fracao,))
+                    conn.commit()
+                    st.rerun()
+        else:
+            st.info("Nenhum aviso de ausência pendente para a sua fração.")
+            
+        st.markdown("---")
+        
         df_militares = pd.read_sql_query("SELECT id, identidade, pg, nome, fracao, presenca, falta, justificativa FROM militares WHERE fracao = %s", conn, params=(st.session_state.fracao,))
         
         df_militares['presenca'] = df_militares['presenca'].astype(bool)
@@ -279,29 +294,34 @@ def tela_gerente():
         df_militares['pg_cat'] = pd.Categorical(df_militares['pg_norm'], categories=ordem_hierarquica, ordered=True)
         df_militares = df_militares.sort_values(['pg_cat', 'nome']).drop(columns=['pg_cat', 'pg_norm'])
         
-        editado = st.data_editor(
-            df_militares,
-            column_config={
-                "id": None, "identidade": None, 
-                "pg": st.column_config.TextColumn("P/G", disabled=True), 
-                "nome": st.column_config.TextColumn("NOME DE GUERRA", disabled=True), 
-                "fracao": None, 
-                "presenca": st.column_config.CheckboxColumn("PRESENÇA", default=False), 
-                "falta": st.column_config.CheckboxColumn("FALTA", default=False), 
-                "justificativa": st.column_config.TextColumn("JUSTIFICATIVA")
-            },
-            hide_index=True, use_container_width=True, key="editor_gerente"
-        )
-        
-        if st.button("💾 Salvar Chamada da Seção", type="primary"):
-            agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            gerente_nome = f"{st.session_state.pg} {st.session_state.nome_guerra}"
-            cursor = conn.cursor()
-            for index, row in editado.iterrows():
-                cursor.execute("UPDATE militares SET presenca = %s, falta = %s, justificativa = %s, ultimo_gerente = %s, ultima_atualizacao = %s WHERE id = %s",
-                               (int(row['presenca']), int(row['falta']), row['justificativa'], gerente_nome, agora, row['id']))
-            conn.commit()
-            st.success("✅ Chamada registrada com sucesso! (Visível em tempo real para os Comandantes)")
+        # O formulário impede o recarregamento automático (lag) da página ao clicar nas caixas
+        with st.form("form_chamada_diaria"):
+            editado = st.data_editor(
+                df_militares,
+                column_config={
+                    "id": None, "identidade": None, 
+                    "pg": st.column_config.TextColumn("P/G", disabled=True), 
+                    "nome": st.column_config.TextColumn("NOME DE GUERRA", disabled=True), 
+                    "fracao": None, 
+                    "presenca": st.column_config.CheckboxColumn("PRESENÇA", default=False), 
+                    "falta": st.column_config.CheckboxColumn("FALTA", default=False), 
+                    "justificativa": st.column_config.TextColumn("JUSTIFICATIVA")
+                },
+                hide_index=True, use_container_width=True, key="editor_gerente"
+            )
+            
+            submit_chamada = st.form_submit_button("💾 Salvar Chamada da Seção", type="primary")
+            
+            if submit_chamada:
+                agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                gerente_nome = f"{st.session_state.pg} {st.session_state.nome_guerra}"
+                cursor = conn.cursor()
+                for index, row in editado.iterrows():
+                    cursor.execute("UPDATE militares SET presenca = %s, falta = %s, justificativa = %s, ultimo_gerente = %s, ultima_atualizacao = %s WHERE id = %s",
+                                   (int(row['presenca']), int(row['falta']), row['justificativa'], gerente_nome, agora, row['id']))
+                conn.commit()
+                st.success("✅ Chamada registrada com sucesso! (Visível em tempo real para os Comandantes)")
+                st.rerun()
             
     with tab_plano:
         st.info("Abaixo constam os dados de contato atuais da sua fração (Apenas visualização).")
@@ -404,28 +424,45 @@ def tela_administrador():
                 st.rerun()
 
         st.markdown("---")
-        st.subheader("🧹 Limpeza Geral de Dados (Marco Zero da OM)")
-        st.warning("⚠️ Atenção: Esta ação apaga TODOS os militares de teste, históricos, férias, viagens, solicitações, frações e pelotões existentes, mantendo apenas a sua conta de Administrador Geral (000000).")
-        if st.button("🗑️ Limpar Todos os Dados de Teste e Reiniciar OM", type="primary"):
-            cur = conn.cursor()
-            try:
-                cur.execute("DELETE FROM militares WHERE identidade != '000000'")
-                cur.execute("DELETE FROM usuarios WHERE identidade != '000000'")
-                cur.execute("DELETE FROM pelotoes")
-                cur.execute("DELETE FROM fracoes")
-                cur.execute("DELETE FROM ausencias_futuras")
-                cur.execute("DELETE FROM historico")
-                cur.execute("DELETE FROM ferias")
-                cur.execute("DELETE FROM viagens")
-                cur.execute("DELETE FROM backup_deletados")
-                cur.execute("DELETE FROM solicitacoes_dados")
-                cur.execute("DELETE FROM solicitacoes_pessoal")
-                conn.commit()
-                st.success("✅ Banco de dados limpo com sucesso! Pronto para o uso oficial.")
-                st.rerun()
-            except Exception as e:
-                conn.rollback()
-                st.error(f"Erro ao limpar dados: {e}")
+        st.subheader("🧹 Limpeza e Manutenção do Banco de Dados")
+        st.write("Selecione qual tipo de informação deseja apagar do sistema.")
+        
+        c_limp1, c_limp2 = st.columns(2)
+        
+        with c_limp1:
+            st.info("🕒 **Limpar Faltas e Históricos**\nApaga o histórico de chamadas, férias, viagens e ausências previstas, além de zerar a chamada atual. Mantém o efetivo intacto.")
+            if st.button("🗑️ Apagar Registros de Faltas", type="primary"):
+                cur = conn.cursor()
+                try:
+                    cur.execute("DELETE FROM historico")
+                    cur.execute("DELETE FROM ausencias_futuras")
+                    cur.execute("DELETE FROM ferias")
+                    cur.execute("DELETE FROM viagens")
+                    # Zera o status de todo mundo na tabela principal
+                    cur.execute("UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-'")
+                    conn.commit()
+                    st.success("✅ Histórico de faltas limpo com sucesso!")
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Erro ao limpar faltas: {e}")
+                    
+        with c_limp2:
+            st.error("⚠️ **Limpar Efetivo (Zeramento)**\nApaga TODOS os militares, usuários e lixeiras do banco, exceto a sua conta de Administrador (000000). Mantém a estrutura de pelotões.")
+            if st.button("🗑️ Apagar Todo o Efetivo", type="primary"):
+                cur = conn.cursor()
+                try:
+                    cur.execute("DELETE FROM militares WHERE identidade != '000000'")
+                    cur.execute("DELETE FROM usuarios WHERE identidade != '000000'")
+                    cur.execute("DELETE FROM backup_deletados")
+                    cur.execute("DELETE FROM solicitacoes_dados")
+                    cur.execute("DELETE FROM solicitacoes_pessoal")
+                    conn.commit()
+                    st.success("✅ Todo o efetivo foi apagado com sucesso!")
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Erro ao apagar efetivo: {e}")
         
     with abas[1]:
         st.subheader("Adicionar Novo Militar (Direto)")
@@ -446,7 +483,6 @@ def tela_administrador():
             if st.form_submit_button("Cadastrar Novo Militar"):
                 cur = conn.cursor()
                 try:
-                    # Aplica a formatação inteligente (Title Case) no nome completo
                     novo_nome_completo_fmt = formatar_nome_completo(novo_nome_completo)
                     
                     cur.execute("SELECT COUNT(*) FROM militares WHERE identidade = %s", (nova_identidade,))
@@ -566,7 +602,6 @@ def tela_administrador():
                         if st.form_submit_button("Salvar Edição"):
                             cur = conn.cursor()
                             try:
-                                # Aplica formatação Title Case no nome editado também
                                 e_completo_fmt = formatar_nome_completo(e_completo)
                                 
                                 cur.execute("UPDATE militares SET pg=%s, nome=%s, nome_completo=%s, pelotao=%s, fracao=%s WHERE identidade=%s", (e_pg, e_guerra, e_completo_fmt, e_pelotao, e_fracao, idt_edit))
@@ -791,7 +826,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             df_militares.at[index, 'falta'] = 1
             df_militares.at[index, 'presenca'] = 0
             df_militares.at[index, 'justificativa'] = f"Férias ({ferias_ativas[row['identidade']]})"
-            df_militares.at[index, 'ultimo_gerente'] = "Sistema Automático (Férias)"
+            df_militares.at[index, 'ultimo_gerente'] = "Sistema Automático"
             df_militares.at[index, 'ultima_atualizacao'] = agora_exibicao
             
     ordem_hierarquica = ["Gen Ex", "Gen Div", "Gen Bda", "Cel", "Ten Cel", "Maj", "Cap", "1º Ten", "2º Ten", "Asp Of", "S Ten", "1º Sgt", "2º Sgt", "3º Sgt", "Cb", "Sd EP", "Sd EV"]
@@ -813,24 +848,54 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
         df_mapa['pg_cat'] = pd.Categorical(df_mapa['pg_norm'], categories=ordem_hierarquica, ordered=True)
         df_mapa = df_mapa.sort_values(['pg_cat', 'nome_guerra']).drop(columns=['pg_cat', 'pg_norm'])
         
-        df_mapa['STATUS'] = df_mapa.apply(lambda r: 'PRESENTE' if r['presenca']==1 else ('FALTOU' if r['falta']==1 else 'PENDENTE'), axis=1)
+        # --- LÓGICA ATUALIZADA DO STATUS (Faltas vs Férias) ---
+        def determinar_status(row):
+            if row['presenca'] == 1: return 'PRESENTE'
+            if row['falta'] == 1:
+                if row['justificativa'] and 'Férias' in str(row['justificativa']):
+                    return 'FÉRIAS'
+                return 'FALTA'
+            return 'PENDENTE'
+            
+        df_mapa['STATUS'] = df_mapa.apply(determinar_status, axis=1)
         
-        # --- DEFINIÇÃO DA ORDEM DAS COLUNAS ---
         if not is_cmt_om:
-            # Visão do Cmt de Pelotão: Ordem simplificada e focada no controle de presença
             colunas_exibicao_mapa = ['pg', 'nome_guerra', 'STATUS', 'justificativa', 'ultima_atualizacao', 'ultimo_gerente', 'fracao', 'pelotao']
         else:
-            # Visão do Cmt da OM: Mesma ordem lógica, mas incluindo o Nome Completo
             colunas_exibicao_mapa = ['pg', 'nome_guerra', 'nome_completo', 'STATUS', 'justificativa', 'ultima_atualizacao', 'ultimo_gerente', 'fracao', 'pelotao']
         
         st.dataframe(df_mapa[colunas_exibicao_mapa], hide_index=True, use_container_width=True)
         
-        c1, c2, c3, c4 = st.columns(4)
+        # --- MÉTRICAS ATUALIZADAS (5 BLOCOS) ---
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Efetivo Total", len(df_mapa))
         c2.metric("Presentes", len(df_mapa[df_mapa['STATUS'] == 'PRESENTE']))
-        c3.metric("Faltas / Férias", len(df_mapa[df_mapa['STATUS'] == 'FALTOU']))
-        c4.metric("Pendentes", len(df_mapa[df_mapa['STATUS'] == 'PENDENTE']))
+        c3.metric("Faltas", len(df_mapa[df_mapa['STATUS'] == 'FALTA']))
+        c4.metric("Férias", len(df_mapa[df_mapa['STATUS'] == 'FÉRIAS']))
+        c5.metric("Pendentes", len(df_mapa[df_mapa['STATUS'] == 'PENDENTE']))
         
+        # --- NOVO RESUMO E ALERTAS DE FALTOSOS E PENDENTES ---
+        st.markdown("---")
+        col_resumo, col_avisos = st.columns([2, 1])
+        
+        with col_resumo:
+            st.write("📋 **Relação de Faltosos**")
+            df_faltosos = df_mapa[df_mapa['STATUS'] == 'FALTA'][['pg', 'nome_guerra', 'justificativa']]
+            if not df_faltosos.empty:
+                st.dataframe(df_faltosos, hide_index=True, use_container_width=True)
+            else:
+                st.success("Nenhum militar faltoso no momento.")
+                
+        with col_avisos:
+            st.write("⚠️ **Frações Pendentes (Não tiraram a falta)**")
+            fracoes_pendentes = df_mapa[df_mapa['STATUS'] == 'PENDENTE']['fracao'].unique()
+            if len(fracoes_pendentes) > 0:
+                for frac in sorted(fracoes_pendentes):
+                    st.warning(f"• {frac}")
+            else:
+                st.success("Todas as seções lançaram a chamada!")
+        
+        # Botão de Consolidar
         if not is_cmt_om:
             st.markdown("---")
             if st.button("✔️ Finalizar e Consolidar Chamada do Pelotão", type="primary"):
@@ -964,7 +1029,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                     mil_opcoes = militares_pelotao_ativo['identidade'] + " - " + militares_pelotao_ativo['pg'] + " " + militares_pelotao_ativo['nome']
                     sel_mil_gerente = st.selectbox("Selecione o Militar para ser Gerente", mil_opcoes)
                     
-                    # Nome do botão alterado para dar mais clareza de fluxo
                     if st.form_submit_button("Solicitar Atribuição de Gerente ao Administrador"):
                         idt_g = sel_mil_gerente.split(" - ")[0]
                         m_row = militares_pelotao_ativo[militares_pelotao_ativo['identidade'] == idt_g].iloc[0]
@@ -1036,7 +1100,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                     if i_idt and i_pg and i_guerra:
                         cur = conn.cursor()
                         try:
-                            # Aplica formatação automática Title Case aqui também
                             i_completo_fmt = formatar_nome_completo(i_completo)
                             
                             cur.execute("""INSERT INTO solicitacoes_pessoal (tipo, identidade, pg, nome, nome_completo, pelotao_destino, fracao_destino, status)
