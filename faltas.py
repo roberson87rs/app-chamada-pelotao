@@ -64,12 +64,16 @@ def init_db():
     
     conn.commit()
     
+    # Criar admin geral se não existir na tabela de usuários
     cursor.execute("SELECT COUNT(*) FROM usuarios WHERE identidade = '000000'")
     if cursor.fetchone()[0] == 0:
         senha_padrao = hash_senha("1234")
         cursor.execute("INSERT INTO usuarios (usuario, identidade, senha, pg, nome, nome_completo, fracao, pelotao, perfil) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", 
                        ("admin", "000000", senha_padrao, "Cel", "ADMIN", "Administrador Geral do Sistema", "S1", "Geral", "Administrador"))
-        conn.commit()
+        
+    # Assegurar que o Administrador NUNCA apareça na tabela de efetivo (militares)
+    cursor.execute("DELETE FROM militares WHERE identidade = '000000'")
+    conn.commit()
         
     cursor.close()
     conn.close()
@@ -164,9 +168,10 @@ def exibir_planilha_ferias(conn, filtro_pelotao=None):
         SELECT m.pg, m.nome as nome_guerra, m.nome_completo, m.fracao, m.pelotao, f.data_inicio, f.data_fim, f.bi 
         FROM ferias f
         INNER JOIN militares m ON f.identidade = m.identidade
+        WHERE m.identidade != '000000'
     """
     if filtro_pelotao:
-        query_ferias += f" WHERE m.pelotao = '{filtro_pelotao}'"
+        query_ferias += f" AND m.pelotao = '{filtro_pelotao}'"
         
     df_todas_ferias = pd.read_sql_query(query_ferias, conn)
     
@@ -361,7 +366,7 @@ def tela_gerente():
             
         st.markdown("---")
         
-        df_militares = pd.read_sql_query("SELECT id, identidade, pg, nome, fracao, presenca, falta, justificativa FROM militares WHERE fracao = %s", conn, params=(st.session_state.fracao,))
+        df_militares = pd.read_sql_query("SELECT id, identidade, pg, nome, fracao, presenca, falta, justificativa FROM militares WHERE fracao = %s AND identidade != '000000'", conn, params=(st.session_state.fracao,))
         
         df_militares['presenca'] = df_militares['presenca'].astype(bool)
         df_militares['falta'] = df_militares['falta'].astype(bool)
@@ -406,7 +411,7 @@ def tela_gerente():
             
     with tab_plano:
         st.info("Abaixo constam os dados de contato atuais da sua fração (Apenas visualização).")
-        df_contatos = pd.read_sql_query("SELECT pg, nome as nome_guerra, celular, whatsapp, telefone as residencial, email, endereco FROM militares WHERE fracao = %s", conn, params=(st.session_state.fracao,))
+        df_contatos = pd.read_sql_query("SELECT pg, nome as nome_guerra, celular, whatsapp, telefone as residencial, email, endereco FROM militares WHERE fracao = %s AND identidade != '000000'", conn, params=(st.session_state.fracao,))
         
         df_contatos['pg_norm'] = df_contatos['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_contatos['pg'])
         df_contatos['pg_cat'] = pd.Categorical(df_contatos['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
@@ -604,12 +609,12 @@ def tela_administrador():
         
         try:
             query_uniao = """
-                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares WHERE pelotao = %s
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares WHERE pelotao = %s AND identidade != '000000'
                 UNION
-                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios WHERE pelotao = %s
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios WHERE pelotao = %s AND identidade != '000000'
             """
             df_all = pd.read_sql_query(query_uniao, conn, params=(st.session_state.admin_gestao_pel, st.session_state.admin_gestao_pel))
-            df_all = df_all[df_all['identidade'] != '000000'].drop_duplicates(subset=['identidade'])
+            df_all = df_all.drop_duplicates(subset=['identidade'])
         except Exception as e:
             conn.rollback()
             df_all = pd.DataFrame()
@@ -699,12 +704,12 @@ def tela_administrador():
         st.subheader("Atribuir e Gerenciar Perfis de Acesso")
         try:
             query_uniao_acesso = """
-                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM militares WHERE identidade != '000000'
                 UNION
-                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios
+                SELECT identidade, pg, nome, nome_completo, fracao, pelotao FROM usuarios WHERE identidade != '000000'
             """
             df_all_acc = pd.read_sql_query(query_uniao_acesso, conn)
-            df_all_acc = df_all_acc[df_all_acc['identidade'] != '000000'].drop_duplicates(subset=['identidade'])
+            df_all_acc = df_all_acc.drop_duplicates(subset=['identidade'])
         except:
             df_all_acc = pd.DataFrame()
 
@@ -763,7 +768,6 @@ def tela_administrador():
         
         if not df_req_pessoal.empty:
             for idx, row in df_req_pessoal.iterrows():
-                # Formatação condicional para exibir o tipo da solicitação de forma clara
                 acao_texto = f"Destino/Fração: {row['pelotao_destino']} / {row['fracao_destino']}"
                 if row['tipo'] == 'REMOVER_GERENTE':
                     acao_texto = f"Solicitação de DESTITUIÇÃO do perfil de GERENTE ({row['pelotao_destino']})"
@@ -911,10 +915,11 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
     
     filtro_pelotao = None if is_cmt_om else st.session_state.pelotao
     
+    # ATENÇÃO: Adicionado WHERE identidade != '000000' para ocultar o Admin Geral do efetivo real
     if filtro_pelotao:
-        df_militares = pd.read_sql_query("SELECT identidade, pg, nome as nome_guerra, nome_completo, fracao, pelotao, presenca, falta, justificativa, ultimo_gerente, ultima_atualizacao FROM militares WHERE pelotao = %s", conn, params=(filtro_pelotao,))
+        df_militares = pd.read_sql_query("SELECT identidade, pg, nome as nome_guerra, nome_completo, fracao, pelotao, presenca, falta, justificativa, ultimo_gerente, ultima_atualizacao FROM militares WHERE pelotao = %s AND identidade != '000000'", conn, params=(filtro_pelotao,))
     else:
-        df_militares = pd.read_sql_query("SELECT identidade, pg, nome as nome_guerra, nome_completo, fracao, pelotao, presenca, falta, justificativa, ultimo_gerente, ultima_atualizacao FROM militares", conn)
+        df_militares = pd.read_sql_query("SELECT identidade, pg, nome as nome_guerra, nome_completo, fracao, pelotao, presenca, falta, justificativa, ultimo_gerente, ultima_atualizacao FROM militares WHERE identidade != '000000'", conn)
     
     agora_exibicao = datetime.now().strftime("%d/%m/%Y")
     for index, row in df_militares.iterrows():
@@ -976,7 +981,6 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             else:
                 st.success("Nenhum militar faltoso no momento.")
                 
-            # --- NOVA SEÇÃO: MILITARES PENDENTES ---
             st.write("⏳ **Militares Pendentes (Aguardando Chamada)**")
             df_pendentes_militares = df_mapa[df_mapa['STATUS'] == 'PENDENTE'][['pg', 'nome_guerra', 'fracao']]
             if not df_pendentes_militares.empty:
@@ -1007,9 +1011,9 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                     ids_ferias = list(ferias_ativas.keys())
                     if ids_ferias:
                         format_strings = ','.join(['%s'] * len(ids_ferias))
-                        cur.execute(f"UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s AND identidade NOT IN ({format_strings})", tuple([filtro_pelotao] + ids_ferias))
+                        cur.execute(f"UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s AND identidade != '000000' AND identidade NOT IN ({format_strings})", tuple([filtro_pelotao] + ids_ferias))
                     else:
-                        cur.execute("UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s", (filtro_pelotao,))
+                        cur.execute("UPDATE militares SET presenca = 0, falta = 0, justificativa = '', ultimo_gerente = '-', ultima_atualizacao = '-' WHERE pelotao = %s AND identidade != '000000'", (filtro_pelotao,))
                     
                     conn.commit()
                     st.success("✅ Chamada do pelotão consolidada com sucesso, enviada para o Histórico da OM e os campos manuais foram limpos!")
@@ -1025,14 +1029,14 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
                 SELECT m.pg, m.nome as nome_guerra, m.nome_completo, v.fracao, v.pelotao, v.data_ida, v.data_volta, v.cidade, v.pais 
                 FROM viagens v 
                 INNER JOIN militares m ON v.identidade = m.identidade
-                WHERE v.pelotao = %s ORDER BY v.data_ida DESC
+                WHERE v.pelotao = %s AND m.identidade != '000000' ORDER BY v.data_ida DESC
             """, conn, params=(filtro_pelotao,))
         else:
             df_viagens = pd.read_sql_query("""
                 SELECT m.pg, m.nome as nome_guerra, m.nome_completo, v.fracao, v.pelotao, v.data_ida, v.data_volta, v.cidade, v.pais 
                 FROM viagens v 
                 INNER JOIN militares m ON v.identidade = m.identidade
-                ORDER BY v.data_ida DESC
+                WHERE m.identidade != '000000' ORDER BY v.data_ida DESC
             """, conn)
         
         if not df_viagens.empty: st.dataframe(df_viagens, hide_index=True, use_container_width=True)
@@ -1041,9 +1045,9 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
     with abas[2]: # PLANO DE CHAMADA
         st.subheader("Plano de Chamada")
         if filtro_pelotao:
-            df_plano = pd.read_sql_query("SELECT pg, nome as nome_guerra, nome_completo, fracao, celular, whatsapp, telefone as residencial, email, endereco FROM militares WHERE pelotao = %s", conn, params=(filtro_pelotao,))
+            df_plano = pd.read_sql_query("SELECT pg, nome as nome_guerra, nome_completo, fracao, celular, whatsapp, telefone as residencial, email, endereco FROM militares WHERE pelotao = %s AND identidade != '000000'", conn, params=(filtro_pelotao,))
         else:
-            df_plano = pd.read_sql_query("SELECT pg, nome as nome_guerra, nome_completo, fracao, pelotao, celular, whatsapp, telefone as residencial, email, endereco FROM militares", conn)
+            df_plano = pd.read_sql_query("SELECT pg, nome as nome_guerra, nome_completo, fracao, pelotao, celular, whatsapp, telefone as residencial, email, endereco FROM militares WHERE identidade != '000000'", conn)
             
         df_plano['pg_norm'] = df_plano['pg'].str.upper().map(PG_UPPER_MAP).fillna(df_plano['pg'])
         df_plano['pg_cat'] = pd.Categorical(df_plano['pg_norm'], categories=ORDEM_HIERARQUICA, ordered=True)
@@ -1095,7 +1099,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             df_seguranca = pd.read_sql_query("""
                 SELECT pg, nome as nome_guerra, nome_completo, pelotao, fracao, perfil, usuario 
                 FROM usuarios 
-                WHERE perfil IS NOT NULL AND perfil != '' AND perfil != 'Convencional'
+                WHERE perfil IS NOT NULL AND perfil != '' AND perfil != 'Convencional' AND identidade != '000000'
                 ORDER BY pelotao, nome
             """, conn)
             
@@ -1122,7 +1126,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             
             st.subheader("👨‍💼 Gerentes Atuais do Pelotão")
             df_gerentes_atuais = pd.read_sql_query(
-                "SELECT identidade, pg, nome as nome_guerra, fracao FROM usuarios WHERE pelotao = %s AND perfil LIKE '%%Gerente%%'", 
+                "SELECT identidade, pg, nome as nome_guerra, fracao FROM usuarios WHERE pelotao = %s AND perfil LIKE '%%Gerente%%' AND identidade != '000000'", 
                 conn, params=(filtro_pelotao,)
             )
             
@@ -1157,7 +1161,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
 
             st.subheader("👔 Indicar Novo Gerente para Fração")
             fracoes_pelotao_ativo = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(filtro_pelotao,))['nome_fracao'].tolist()
-            militares_pelotao_ativo = pd.read_sql_query("SELECT identidade, pg, nome FROM militares WHERE pelotao = %s", conn, params=(filtro_pelotao,))
+            militares_pelotao_ativo = pd.read_sql_query("SELECT identidade, pg, nome FROM militares WHERE pelotao = %s AND identidade != '000000'", conn, params=(filtro_pelotao,))
             
             if fracoes_pelotao_ativo and not militares_pelotao_ativo.empty:
                 with st.form("form_indicar_gerente"):
@@ -1200,7 +1204,7 @@ def tela_comandante_generica(titulo_painel, is_cmt_om=False):
             fracoes_origem_lista = pd.read_sql_query("SELECT nome_fracao FROM fracoes WHERE pelotao = %s AND status = 'APROVADA'", conn, params=(st.session_state.pel_origem_selecionado,))['nome_fracao'].tolist()
             filtro_frac_origem = st.selectbox("Filtrar por Fração de Origem", fracoes_origem_lista if fracoes_origem_lista else ["Geral"])
             
-            df_mil_origem = pd.read_sql_query("SELECT identidade, pg, nome, nome_completo, pelotao FROM militares WHERE pelotao = %s AND fracao = %s", conn, params=(st.session_state.pel_origem_selecionado, filtro_frac_origem))
+            df_mil_origem = pd.read_sql_query("SELECT identidade, pg, nome, nome_completo, pelotao FROM militares WHERE pelotao = %s AND fracao = %s AND identidade != '000000'", conn, params=(st.session_state.pel_origem_selecionado, filtro_frac_origem))
             
             if not df_mil_origem.empty:
                 militar_escolhido = st.selectbox("Selecione o Militar", df_mil_origem['identidade'] + " - " + df_mil_origem['pg'] + " " + df_mil_origem['nome'])
